@@ -202,3 +202,27 @@ struct FlowLayout: Layout {
 - Hierarchical styles (`.secondary`, `.tertiary`) over manual opacity.
 - `bold()` over `fontWeight(.bold)` — system chooses correct weight for context.
 - In `Form`, wrap controls in `LabeledContent` for correct layout.
+
+
+## NavigationSplitView (macOS)
+
+For most macOS apps, `NavigationSplitView` is the “sidebar + detail” primitive. Treat selection as **per-window state**:
+
+```swift
+struct BrowserWindow: View {
+    @State private var selection: SidebarSelection?   // per-window
+
+    var body: some View {
+        NavigationSplitView {
+            Sidebar(selection: $selection)
+        } detail: {
+            Detail(selection: selection)
+        }
+        .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
+    }
+}
+```
+
+Avoid storing sidebar selection in a global singleton/manager unless the product explicitly wants selection to synchronize across windows.
+
+Use `toolbar` for primary actions (macOS toolbars), and keep menus in `Commands` (see `references/platform.md`).

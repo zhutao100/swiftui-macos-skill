@@ -39,13 +39,13 @@ struct ExpensiveChart: View, Equatable {
 }
 ```
 
-SwiftUI skips body re-evaluation when comparison returns `true`.
+Wrap the view using `.equatable()` (or `EquatableView`) to enable the optimization. SwiftUI can then skip body re-evaluation when comparison returns `true`.
 
 **Trap**: SwiftData `@Model` types are reference types. Comparing two references to the same object always returns `true`. Don't use `Equatable` on views that take `@Model` instances as direct input — or compare on value-type identifiers only.
 
 ## NSViewRepresentable + Equatable
 
-Conform `NSViewRepresentable` types to `Equatable` to prevent unnecessary `updateNSView` calls. Without this, `updateNSView` runs on every parent body re-evaluation. See `references/platform.md`.
+For representables, you generally need to **gate work inside `updateNSView`** (compare inputs and early-return) and/or wrap the representable in `.equatable()` at the call site. Simply conforming the representable type to `Equatable` is not sufficient unless the view is actually used as an `EquatableView`.
 
 ## The .id() Modifier
 
@@ -215,3 +215,30 @@ Use when Instruments shows excessive CA layer compositing. Don't use on views wi
 ## Observation
 
 See `references/observation.md` for observation tracking discipline — state capture, version counters, `@ObservationIgnored`, and scope minimization. Observation problems are the most common performance issue in non-trivial SwiftUI apps.
+
+
+## Instrumentation (macOS)
+
+Use tooling to turn “feels slow” into evidence:
+
+- **`Self._printChanges()`**: identify which inputs triggered invalidation.
+- **Instruments → Time Profiler**: attribute CPU time to hot paths in body computation.
+- **Instruments → SwiftUI** (where available): correlate view updates with state changes.
+- **OSLog + signposts** around expensive derived computations (sorting, filtering, layout).
+
+Example: gate an expensive derivation by caching and invalidating deliberately:
+
+```swift
+@State private var cached: [Item] = []
+@State private var cachedVersion: UInt64 = 0
+
+var body: some View {
+    Content(items: cached)
+        .onChange(of: store.itemsVersion, initial: true) { _, v in
+            cachedVersion = v
+            cached = store.items.sorted(by: sort)
+        }
+}
+```
+
+This turns “every update sorts” into “only when version changes”.

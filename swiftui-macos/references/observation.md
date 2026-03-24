@@ -42,7 +42,7 @@ struct Theme { var primary: Color; var secondary: Color }  // NOT Equatable
 }
 ```
 
-**Fix**: conform all property types to `Equatable`. This is trivial (usually just adding `: Equatable`) and eliminates redundant notifications for every assignment.
+**Fix**: when feasible, make value types `Equatable` (or store them as smaller `Equatable` projections like IDs). For large structs or expensive comparisons, prefer version counters or reference types with identity semantics.
 
 ## In-Place Mutations Always Notify
 
@@ -286,3 +286,16 @@ This replaces the anti-pattern of wrapping `withObservationTracking` in a recurs
 - **@AppStorage inside @Observable**: Does not trigger view updates. `@AppStorage` only works inside `View` structs.
 - **SwiftData @Model + Equatable**: `@Model` types are reference types. If a view's `Equatable` conformance compares model properties, both `lhs` and `rhs` read from the same object — comparison always returns `true`, and SwiftUI never detects changes. Don't conform model-displaying views to `Equatable`, or compare on value-type IDs only.
 - **Observation in `nonisolated` contexts**: `Observations {}` captures the isolation context of where it's created. If you create it in a `nonisolated` context, the yielded values arrive without actor isolation — be explicit about isolation in the consuming `Task`.
+
+
+## Debugging observation
+
+When a view “updates too much”, treat it as a dependency-finding exercise:
+
+- Use `Self._printChanges()` in the suspected view to see which inputs triggered invalidation.
+- If you suspect broad tracking, temporarily split a large view into smaller subviews (especially `ForEach` rows) so each row has its own tracking scope.
+- For non-view contexts, validate that your observation bridge is correct:
+  - macOS 26+: `Observations { ... }` for a transactional `AsyncSequence`
+  - older OS: `withObservationTracking { ... } onChange: { ... }` (careful about re-registration loops)
+
+See `references/performance.md` for additional instrumentation patterns.

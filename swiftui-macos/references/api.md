@@ -4,9 +4,9 @@
 
 - `foregroundColor()` → `foregroundStyle()`.
 - `cornerRadius()` → `clipShape(.rect(cornerRadius:))`.
-- `tabItem()` → `Tab` type with `TabView`.
+- Prefer the modern `Tab("Title", systemImage: ..., value: ...) { ... }` API inside `TabView` when targeting newer OS releases. Keep `.tabItem { ... }` for older deployment targets.
 - `overlay(content, alignment:)` → `overlay(alignment:) { content }`.
-- `.navigationBarLeading`/`.navigationBarTrailing` → `.topBarLeading`/`.topBarTrailing`.
+- Prefer `toolbar` with explicit `ToolbarItemPlacement` (macOS uses toolbars rather than iOS-style navigation bars).
 - `NavigationView` → `NavigationStack` or `NavigationSplitView`.
 - `NavigationLink(destination:)` → `navigationDestination(for:)`.
 - `PreviewProvider` → `#Preview`.
@@ -14,7 +14,7 @@
 - `GeometryReader` → `containerRelativeFrame()`, `visualEffect()`, or `Layout` protocol when possible. `GeometryReader` is still correct for reading sizes for custom layouts or coordinate space conversions.
 - `animation(_:)` without value → `.animation(.bouncy, value: score)`.
 - `showsIndicators: false` in ScrollView init → `.scrollIndicators(.hidden)`.
-- `Text("A") + Text("B")` concatenation → `Text("\(styledA)\(styledB)")` via interpolation.
+- For mixed text styles, keep `Text` concatenation (`Text("A") + Text("B")`) or use `AttributedString`. Avoid string interpolation when you need per-span styling.
 
 ## Preferred Modern Patterns
 
@@ -35,7 +35,7 @@
 
 - `FormatStyle` over `String(format:)`: `Text(value, format: .number.precision(.fractionLength(2)))`.
 - `localizedStandardContains()` for user-input text filtering — not `contains()` or `localizedCaseInsensitiveContains()`.
-- `Double` over `CGFloat` everywhere except optionals and `inout` parameters (bridging doesn't work there).
+- Prefer `CGFloat` at the API boundary for CoreGraphics/AppKit, and use `Double` for pure math when it reduces conversions. Avoid blanket rules; keep types consistent within a module.
 - Date formatting for display: use `"y"` not `"yyyy"` for correct localization. Prefer `FormatStyle` over manual format strings entirely.
 - `Date(string, strategy: .iso8601)` over manual `DateFormatter` for parsing.
 - `ObservableObject` requires explicit `import Combine` — no longer re-exported by SwiftUI.
@@ -120,3 +120,25 @@ for await (filter, sortOrder) in combineLatest(filterChanges, sortChanges) {
 - **Do not reimplement** `OrderedSet`, `OrderedDictionary`, `Deque`, `Heap`, or any async sequence combinator. The correct implementations handle edge cases (hash collision strategies, COW optimization, cancellation propagation, backpressure) that ad-hoc versions miss.
 - **Add the package** when the first use case arises — don't preemptively add all three. Each is an independent SPM dependency.
 - These are **not third-party dependencies** in the usual sense — they're maintained by the Swift project under the `apple/` GitHub organization, follow Swift Evolution, and are considered the staging ground for eventual standard library inclusion.
+
+
+## Text composition (macOS)
+
+Use `AttributedString` when you need rich styling without breaking accessibility:
+
+```swift
+var title: AttributedString {
+    var s = AttributedString("Build ")
+    var emphasis = AttributedString("faster")
+    emphasis.font = .headline
+    emphasis.foregroundColor = .secondary
+    s.append(emphasis)
+    return s
+}
+
+Text(title)
+```
+
+For localization:
+- Prefer `Text` initialized from `LocalizedStringKey` (default `Text("...")` behavior).
+- Use `Text(verbatim:)` only for non-localized, already-final strings (e.g., debug output).

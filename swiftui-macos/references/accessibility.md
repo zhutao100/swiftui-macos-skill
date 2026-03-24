@@ -28,7 +28,8 @@ Menu("Options", systemImage: "ellipsis.circle") { ... }
 
 - Never hard-code font sizes. Use semantic fonts: `.body`, `.headline`, `.caption`.
 - `.caption2` is extremely small — avoid. Even `.caption` should be used carefully.
-- Custom sizes: `@ScaledMetric` (macOS 14 and earlier) or `.font(.body.scaled(by:))` (macOS 26+).
+- For **custom scaling** (padding, icon sizes), use `@ScaledMetric`.
+- For **font scaling**, prefer semantic fonts (`.body`, `.headline`, etc). When you need proportional adjustment, apply `Font.scaled(by:)` to a semantic font and keep it coupled to Dynamic Type.
 - Avoid fixed frames that can't accommodate larger text sizes.
 
 ## Reduce Motion
@@ -181,3 +182,69 @@ Custom accessibility actions appear in VoiceOver's actions menu (swipe up/down w
 - **VoiceOver** (Cmd+F5): navigate the entire interface. Every interactive element should be reachable and clearly described. Test rotors and custom actions.
 - **Full Keyboard Access** (System Settings → Accessibility → Keyboard): verify tab order is logical and all actions are triggerable via keyboard.
 - **Increase Contrast** and **Reduce Motion**: verify the app respects these preferences. Check `accessibilityReduceMotion`, `accessibilityIncreaseContrast`, `accessibilityDifferentiateWithoutColor` environment values.
+
+
+## Keyboard Navigation (macOS-first)
+
+macOS users expect a keyboard-first UX. Validate that the UI works without a mouse:
+
+- Prefer `Button`, `Toggle`, `Picker`, `TextField` over gesture-only affordances.
+- Ensure logical focus order. Use `@FocusState` for focus routing and initial focus.
+- Add `keyboardShortcut` for primary commands and menu items.
+- Use `Commands` to define menu structure (and discoverable shortcuts).
+
+```swift
+struct DocumentView: View {
+    enum Field: Hashable { case search }
+    @FocusState private var focusedField: Field?
+
+    var body: some View {
+        TextField("Search", text: $query)
+            .focused($focusedField, equals: .search)
+            .onAppear { focusedField = .search }
+            .keyboardShortcut("f", modifiers: [.command])
+    }
+}
+
+@main
+struct MyApp: App {
+    var body: some Scene {
+        WindowGroup { ContentView() }
+            .commands {
+                CommandGroup(after: .toolbar) {
+                    Button("New Tab", action: openNewTab)
+                        .keyboardShortcut("t", modifiers: [.command])
+                }
+            }
+    }
+}
+```
+
+## Focus and VoiceOver
+
+For “jump to” behavior (e.g., errors, results), use accessibility focus explicitly:
+
+```swift
+@AccessibilityFocusState private var focusError: Bool
+
+Text(errorMessage)
+    .accessibilityFocused($focusError)
+
+Button("Show Error") { focusError = true }
+```
+
+## Testing Workflow
+
+- **Accessibility Inspector**: verify labels, traits, focus order, and rotor behavior.
+- **VoiceOver**: run your primary flows with VoiceOver enabled.
+- **XCUITest**: assert that important elements are discoverable by accessibility identifiers.
+
+```swift
+// In app code:
+Text("Downloads")
+    .accessibilityIdentifier("downloads.title")
+
+// In UI test:
+let title = app.staticTexts["downloads.title"]
+XCTAssertTrue(title.waitForExistence(timeout: 2))
+```

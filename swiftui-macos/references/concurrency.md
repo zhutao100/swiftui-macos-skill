@@ -1,26 +1,29 @@
-# Swift Concurrency
+# Swift Concurrency (macOS SwiftUI)
 
-## Scheduling Cost Hierarchy
+SwiftUI code is almost always **UI-thread sensitive** and therefore actor-isolation sensitive. In Swift 6.2 (Xcode 26), the defaults and opt-ins around isolation matter more than in earlier toolchains.
 
-From cheapest to most expensive:
+## Scheduling: choosing the cheapest correct hop
 
-| Pattern | Cost | Use when |
+Prefer the cheapest construct that preserves correctness and cancellation behavior:
+
+| Pattern | Prefer when | Notes |
 |---|---|---|
-| `MainActor.assumeIsolated { }` | Near-zero (assertion + direct call) | Callbacks known to be on main (e.g., NotificationCenter with `queue: .main`, AppKit delegates) |
-| `await MainActor.run { }` | No allocation, reuses existing task | Already in async context, need main actor access |
-| `DispatchQueue.main.async { }` | ~64B block allocation | Fire-and-forget from `@Sendable` or `nonisolated` closures (e.g., `onTermination` handlers) |
-| `Task.immediate { @MainActor in }` | ~300-500B Task, no hop if already correct | Need Task semantics (cancellation, priority) with predictable ordering |
-| `Task { @MainActor in }` | ~300-500B Task + always enqueues | Intentionally deferred execution with Task semantics |
+| `MainActor.assumeIsolated { ... }` | You are already on main and want an assertion-style gate | Use only when you *know* the callback is on main (e.g., AppKit delegate callbacks documented as main-thread). |
+| `await MainActor.run { ... }` | You are already in an async context and need to touch main-isolated state | Explicit, readable, and works well with structured concurrency. |
+| `DispatchQueue.main.async { ... }` | Fire-and-forget from a synchronous context | No Task cancellation. Use for “schedule and return” glue code. |
+| `Task { @MainActor in ... }` | You need Task semantics (cancellation, priority, task locals) and are okay with deferral | Use for UI work that should be cancellable and scoped. |
+| `Task.immediate { @MainActor in ... }` | You need Task semantics but want to start executing **synchronously on the caller’s executor** (OS 26+) | Starts immediately until the first suspension point. Use carefully to avoid reentrancy surprises. |
 
-**Anti-pattern: `Task { @MainActor in }` for synchronous code.**
+Avoid cargo-culting `Task { @MainActor in ... }` everywhere. Choose based on:
+- whether you need **cancellation**
+- whether deferral vs immediate execution matters
+- what executor you’re currently on
 
-Why it's worse than `DispatchQueue.main.async`:
-- Each call is a raw `malloc` (~300-500 bytes) with **no pooling or recycling** — compared to ~64B for a dispatch block
-- The closure requires `sending`, forcing `Sendable` conformance on all captured values — compile-time friction for zero runtime benefit (`sending` has no runtime cost)
-- Multiple rapid calls create **separate Task objects and separate dispatch enqueues** — there is no coalescing mechanism
-- Both end up at the same `dispatch_async_f(dispatch_get_main_queue(), ...)` call
+## UI rule of thumb
 
-Use `DispatchQueue.main.async` for fire-and-forget main-thread dispatch. Use `Task { @MainActor in }` only when you need Task semantics (cancellation, priority, task-locals).
+- View updates, bindings, and SwiftUI state mutations should be **`@MainActor`** unless you have a proven reason otherwise.
+- Do not “background” work by sprinkling `Task.detached` — be explicit about what must be off-main.
+
 
 ## Actor Isolation
 
@@ -152,7 +155,7 @@ Task.immediate { @MainActor in
 Key semantics:
 - If already on the target executor: **runs synchronously inline** up to the first suspension point, then falls back to normal scheduling. This means mutations are visible immediately after the call — unlike `Task { }` which always enqueues (subsequent code runs *before* the task body).
 - If not on the target executor: falls back to normal enqueue (same as `Task { }`).
-- Full Task allocation (~300-500B) happens either way — the savings are in avoiding the dispatch hop, not the allocation.
+- Immediate tasks still create a Task; the main savings are avoiding an extra scheduling hop, not eliminating overhead entirely.
 
 ```swift
 // Task { } — always deferred, ordering not guaranteed

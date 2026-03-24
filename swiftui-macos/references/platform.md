@@ -9,9 +9,9 @@
 - `dismantleNSView(_:coordinator:)` — static cleanup method.
 - `Coordinator` — for delegates, target-action, and any AppKit → SwiftUI bridging.
 
-### Performance: Equatable Conformance
+### Performance: update gating
 
-Conform to `Equatable` to prevent unnecessary `updateNSView` calls:
+SwiftUI may call `updateNSView` frequently. Make updates **idempotent** and cheap; gate expensive work by comparing inputs and early-returning. If the representable is value-typed and `Equatable`, you can also wrap it in `.equatable()` at the call site to skip updates when inputs didn't change:
 
 ```swift
 struct BlurView: NSViewRepresentable, Equatable {
@@ -28,7 +28,7 @@ struct BlurView: NSViewRepresentable, Equatable {
 }
 ```
 
-Without `Equatable`, `updateNSView` runs on every parent body re-evaluation — even when inputs haven't changed. This is critical for views wrapping expensive AppKit content.
+Even if your representable is `Equatable`, you generally still need to gate work in `updateNSView`. Wrapping in `.equatable()` can help when the representable’s inputs are stable and comparable.
 
 ## Multi-Window State
 
@@ -48,7 +48,7 @@ WindowRoot
 
 - **Global state** (data model, user settings): create once at app level, inject into `WindowGroup`.
 - **Per-window state** (sidebar width, active selection, split position): create with `@State` in the window's root view, inject via environment.
-- Track window identity via `@Environment(\.windowID)` or weak `NSWindow` references.
+- Prefer value-based `WindowGroup(for:)` to let SwiftUI manage window identity. If you truly need `NSWindow`, capture it via an AppKit bridge (see below) and store a weak reference in per-window state.
 - Pages/documents can move between windows — handle ownership transfer explicitly.
 
 ## NSHostingView — Embedding SwiftUI in AppKit
@@ -89,7 +89,7 @@ Use AppKit only for capabilities SwiftUI lacks:
 |---|---|
 | Window chrome (titlebar, toolbar, styleMask) | `NSWindow` via `NSApp.keyWindow` or tracked reference |
 | Drag and drop | `NSDraggingSource` / `NSDraggingDestination` via coordinator |
-| System blur effects | `NSVisualEffectView` or `CABackdropLayer` |
+| System blur effects | `NSVisualEffectView` |
 | Text input with special behavior | `NSTextField` subclass via `NSViewRepresentable` |
 | Pasteboard operations | `NSPasteboard` in coordinator or manager |
 
@@ -168,3 +168,54 @@ macOS interactions differ fundamentally from iOS:
 - **Keyboard shortcuts**: `.keyboardShortcut("n", modifiers: .command)` for frequent actions.
 - **Focus management**: `@FocusState` for keyboard navigation. Tab order must be logical. Test with Full Keyboard Access.
 - **Drag and drop**: Expected for reordering, file import, cross-app data transfer. Native `draggable()` / `dropDestination()` for simple cases; AppKit bridging for complex scenarios.
+
+
+## Capturing NSWindow safely
+
+SwiftUI does not expose a stable “window ID” environment value. If you need access to the backing `NSWindow` (title, style masks, toolbar configuration), capture it via a tiny representable and publish it into per-window state.
+
+```swift
+@Observable @MainActor
+final class WindowHandle {
+    @ObservationIgnored
+    weak var window: NSWindow?
+}
+
+struct WindowReader: NSViewRepresentable {
+    let handle: WindowHandle
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in
+            handle.window = view?.window
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if handle.window == nil {
+            DispatchQueue.main.async { [weak nsView] in
+                handle.window = nsView?.window
+            }
+        }
+    }
+}
+```
+
+Attach it near the window root:
+
+```swift
+struct WindowRoot: View {
+    @State private var windowHandle = WindowHandle()
+
+    var body: some View {
+        ContentView()
+            .background(WindowReader(handle: windowHandle))
+            .onChange(of: windowHandle.window) { _, w in
+                w?.titleVisibility = .hidden
+            }
+    }
+}
+```
+
+This approach keeps AppKit usage explicit, testable, and scoped to a single window.

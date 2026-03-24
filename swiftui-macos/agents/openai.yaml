@@ -1,0 +1,9 @@
+interface:
+  display_name: "SwiftUI (macOS)"
+  short_description: "Runtime-level SwiftUI guidance for macOS: Observation, Concurrency, Identity/Performance, AppKit bridging, Accessibility."
+  icon_small: "./assets/icons/small-logo.svg"
+  icon_large: "./assets/icons/large-logo.svg"
+  brand_color: "#111827"
+  default_prompt: "Use $swiftui-macos to write or review SwiftUI code for macOS with attention to observation scope, view identity, concurrency isolation, and AppKit integration."
+policy:
+  allow_implicit_invocation: true

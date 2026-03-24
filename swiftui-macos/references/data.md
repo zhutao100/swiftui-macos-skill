@@ -180,3 +180,35 @@ try await importer.importItems(parsed)
 ## Identifiable
 
 Prefer conforming types to `Identifiable` rather than specifying `id: \.property` in `ForEach`.
+
+
+## Multi-window scoping (macOS)
+
+For document- or item-based windows, prefer value-based window groups. This lets SwiftUI manage window identity and restoration:
+
+```swift
+@main
+struct MyApp: App {
+    var body: some Scene {
+        WindowGroup(for: DocumentID.self) { $docID in
+            DocumentWindow(docID: docID)
+        }
+    }
+}
+
+struct DocumentWindow: View {
+    let docID: DocumentID?
+
+    @State private var windowState = WindowState()     // per-window UI state
+    @Environment(\.modelContext) private var context   // SwiftData context
+
+    var body: some View {
+        ContentView()
+            .environment(windowState)                  // inject per-window state
+    }
+}
+```
+
+Use `@State` at the *window root* for per-window UI state (selection, inspector visibility, split sizes). Keep global managers (preferences, account/session) at the app root.
+
+When you need to associate AppKit window behaviors (title, style masks) with a specific model, store a weak `NSWindow` reference in a per-window coordinator (see `references/platform.md`).
