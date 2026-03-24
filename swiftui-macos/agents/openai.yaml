@@ -1,0 +1,6 @@
+interface:
+  display_name: "SwiftUI macOS"
+  short_description: "Runtime-level SwiftUI guidance for macOS: Observation, concurrency, identity, performance, AppKit bridging"
+  default_prompt: "Use this skill to write or review macOS SwiftUI code with a focus on observation, concurrency isolation, and view identity/performance."
+policy:
+  allow_implicit_invocation: true
