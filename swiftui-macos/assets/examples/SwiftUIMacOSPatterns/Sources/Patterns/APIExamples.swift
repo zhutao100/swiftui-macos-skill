@@ -2,22 +2,26 @@ import SwiftUI
 
 /// Compile-checked examples for modern SwiftUI APIs.
 public enum APIExamples {
-  /// Demonstrates the `@Animatable` and `@AnimatableIgnored` macros (macOS Tahoe 26+).
-  @available(macOS 26.0, *)
-  @Animatable
-  public struct IntegerView: View {
-    public var number: Float
-
-    @AnimatableIgnored
+  /// A custom animatable view.
+  ///
+  /// Note: macOS 26 adds `@Animatable` and `@AnimatableIgnored`, but those are
+  /// intentionally not used here so this package stays buildable across SDKs.
+  public struct IntegerView: View, Animatable {
+    public var number: CGFloat
     public var label: String
 
-    public init(number: Float, label: String = "Value") {
+    public init(number: CGFloat, label: String = "Value") {
       self.number = number
       self.label = label
     }
 
+    public var animatableData: CGFloat {
+      get { number }
+      set { number = newValue }
+    }
+
     public var body: some View {
-      Text("\(label): \(number.formatted(.number.precision(.fractionLength(0))))")
+      Text("\(label): \(Double(number).formatted(.number.precision(.fractionLength(0))))")
     }
   }
 

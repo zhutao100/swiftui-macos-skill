@@ -61,7 +61,7 @@ public enum PlatformExamples {
       var lastAppliedText: String?
       var onTextChange: ((String) -> Void)?
 
-      func textDidChange(_ notification: Notification) {
+      public func textDidChange(_ notification: Notification) {
         guard let tv = notification.object as? NSTextView else { return }
         onTextChange?(tv.string)
       }

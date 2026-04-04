@@ -1,10 +1,11 @@
 #if canImport(SwiftData)
+  import Foundation
   import SwiftData
 
   @Model
   public final class Note {
     public var title: String = ""
-    public var createdAt: Date = .now
+    public var createdAt: Date = Date.now
 
     public init(title: String) {
       self.title = title

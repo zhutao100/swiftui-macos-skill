@@ -3,14 +3,18 @@ import Foundation
 public enum ConcurrencyExamples {
   /// Demonstrates the ordering difference between Task and Task.immediate.
   @MainActor
-  public static func orderingDemo(log: @escaping (String) -> Void) {
+  public static func orderingDemo(log: @escaping @Sendable (String) -> Void) {
     log("1")
     Task { @MainActor in log("2") }
     log("3")
 
     #if swift(>=6.2)
       log("A")
-      Task.immediate { @MainActor in log("B") }
+      if #available(macOS 26.0, *) {
+        Task.immediate { @MainActor in log("B") }
+      } else {
+        Task { @MainActor in log("B") }
+      }
       log("C")
     #endif
   }

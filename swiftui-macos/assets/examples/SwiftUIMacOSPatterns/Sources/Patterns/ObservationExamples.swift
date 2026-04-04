@@ -9,11 +9,13 @@ public enum ObservationExamples {
   }
 
   /// A classic OS-17-era pattern: re-run work when observed properties change.
-  public static func printOnChange(counter: Counter, onLog: @escaping (String) -> Void) {
+  public static func printOnChange(counter: Counter, onLog: @escaping @Sendable (String) -> Void) {
     withObservationTracking {
       onLog("count=\(counter.count)")
     } onChange: {
-      Task { printOnChange(counter: counter, onLog: onLog) }
+      Task { @MainActor in
+        printOnChange(counter: counter, onLog: onLog)
+      }
     }
   }
 

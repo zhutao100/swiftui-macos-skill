@@ -22,6 +22,7 @@ struct RootView: View {
     }
   }
 
+  @ViewBuilder
   private var sidebar: some View {
     if let model {
       List(
@@ -48,6 +49,7 @@ struct RootView: View {
     }
   }
 
+  @ViewBuilder
   private var detail: some View {
     if let model, let id = model.selectedID, let item = model.item(id: id) {
       ItemDetail(item: item)
