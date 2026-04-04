@@ -1,6 +1,6 @@
-# View composition and animation
+# View composition and navigation (macOS SwiftUI)
 
-This reference covers patterns that affect **SwiftUI view identity**, lifecycle, and correctness on macOS.
+This reference covers patterns that affect **SwiftUI view identity**, lifecycle, and correctness on macOS, with an emphasis on macOS-native navigation and layout idioms.
 
 ## Decomposition strategy
 
@@ -17,14 +17,14 @@ For large views, use extension-based decomposition by domain:
 
 ```swift
 extension MyView {
-    var sidebarContent: some View { ... }
-    var toolbarContent: some ToolbarContent { ... }
+    var sidebarContent: some View { /* ... */ }
+    var toolbarContent: some ToolbarContent { /* ... */ }
 }
 ```
 
 ## Storing view-builder content correctly
 
-Avoid storing escaping view-builder closures on `View` types. Instead, **evaluate the builder in `init`** and store the built value:
+Avoid storing escaping view-builder closures on `View` types. Instead, evaluate the builder in `init` and store the built value:
 
 ```swift
 struct Card<Content: View>: View {
@@ -35,17 +35,13 @@ struct Card<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading) {
-            content
-        }
-        .padding(12)
-        .background(.regularMaterial)
-        .clipShape(.rect(cornerRadius: 12))
+        VStack(alignment: .leading) { content }
+            .padding(12)
+            .background(.regularMaterial)
+            .clipShape(.rect(cornerRadius: 12))
     }
 }
 ```
-
-This keeps the type purely a value container, avoids unexpected captures, and plays well with SwiftUI’s diffing.
 
 ## `.task(id:)` for reactive async work
 
@@ -64,84 +60,34 @@ struct ProfileView: View {
 }
 ```
 
-`.task(id:)` cancels the previous task when the ID changes, and cancels when the view disappears.
+## macOS navigation: `NavigationSplitView` (sidebar-detail)
 
-## Preference keys for child-to-parent flow
+For macOS apps with a sidebar + detail layout, prefer `NavigationSplitView` over “stack-only” navigation.
 
-Use `PreferenceKey` for “reverse environment” data flow (size reporting, anchors, etc.):
+Heuristics:
 
-```swift
-struct SizeKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
-    }
-}
+- Keep selection in a lightweight value (`ID`), not in a heavy model object.
+- Put per-window navigation state in the window root view.
+- For multi-window apps, key navigation state off the `WindowGroup(for:)` value.
 
-ChildView()
-    .background(GeometryReader { geo in
-        Color.clear.preference(key: SizeKey.self, value: geo.size)
-    })
+## Tables (macOS)
 
-.onPreferenceChange(SizeKey.self) { size in
-    self.childSize = size
-}
-```
+macOS users expect tables for dense data. Prefer `Table` when list rows become grid-like.
 
-## Navigation on macOS
+Heuristics:
 
-- Prefer `NavigationSplitView` for sidebar-detail apps (common macOS pattern).
-- Prefer `NavigationStack` for linear flows.
-- Prefer value-based navigation (`navigationDestination(for:)`) over older destination-in-link initializers.
+- Use `TableColumn` for stable columns.
+- Use `SortDescriptor` arrays for explicit sorting.
+- Keep row identity stable (avoid ad-hoc `UUID()`).
 
-## Tabs
+## Inspectors
 
-Modern `TabView` uses explicit `Tab` values:
-
-```swift
-TabView {
-    Tab("Library", systemImage: "books.vertical") {
-        LibraryView()
-    }
-
-    Tab("Settings", systemImage: "gear") {
-        SettingsView()
-    }
-}
-```
-
-## Animation rules
-
-### Avoid global implicit animation
-
-Never use `.animation(_:)` without a `value:` parameter; it can produce surprising, broad animations.
-
-Prefer:
-
-```swift
-.animation(.spring, value: isExpanded)
-```
-
-### Sequencing animations
-
-When you need to chain animations, use the completion-capable `withAnimation` API (where available):
-
-```swift
-withAnimation(.spring) {
-    scale = 2
-} completion: {
-    withAnimation(.spring) {
-        scale = 1
-    }
-}
-```
-
-### Gesture-driven values belong in `@State`
-
-Continuous gestures can update at display refresh rates; store gesture-driven values (`offset`, `scale`, `rotation`) in `@State` to avoid routing every frame through observation.
-
-See `references/performance.md` for details.
+The macOS “Inspector” panel is a common pattern. Prefer SwiftUI inspector APIs when available and fall back to a dedicated `Window` when you need a separate lifecycle boundary.
 
 ## Custom layout protocol
 
-Use the `Layout` protocol when your goal is arranging subviews (not reading sizes for other purposes). `Layout` participates in the layout negotiation and avoids the “greedy” behavior of `GeometryReader`.
+Use the `Layout` protocol when your goal is arranging subviews (not reading sizes for other purposes). `Layout` participates in layout negotiation and avoids the “greedy” behavior of `GeometryReader`.
+
+## Compile-checked examples in this repo
+
+- [`SwiftUIExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/SwiftUIExamples.swift)

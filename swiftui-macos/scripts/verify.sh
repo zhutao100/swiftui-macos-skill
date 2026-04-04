@@ -18,6 +18,13 @@ if command -v swift >/dev/null 2>&1; then
 
     echo "[verify] Running example tests..."
     (cd "$EXAMPLE_DIR" && swift test)
+
+    TEMPLATE_DIR="${ROOT_DIR}/assets/templates/MacOSSwiftUIAppTemplate"
+    if [ -f "${TEMPLATE_DIR}/Package.swift" ]; then
+      echo "[verify] Building template scaffold..."
+      (cd "$TEMPLATE_DIR" && swift build)
+    fi
+
   else
     echo "[verify] SwiftUI module unavailable; skipping Swift package build/test"
   fi

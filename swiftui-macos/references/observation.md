@@ -1,15 +1,25 @@
-# Observation tracking discipline
+# Observation tracking discipline (macOS SwiftUI)
 
 `@Observable` makes every stored property a potential observation dependency. Any property read during a SwiftUI view’s `body` evaluation can become a tracked dependency; when that dependency changes, SwiftUI reevaluates `body` for that view.
 
 The goal is not “avoid updates”; the goal is **scope the right updates to the right views** and avoid accidental dependencies.
+
+> macOS note: iOS-first articles often discuss `ObservableObject`/Combine. This file focuses on Swift’s Observation framework (`@Observable`) as used by SwiftUI on macOS.
+
+## Common macOS pitfall: accidental dependencies in menu/toolbars
+
+On macOS, toolbars and menus are frequently built from SwiftUI view trees. If you build menu content by reading a broad `@Observable` manager, you can accidentally make the entire command tree dependent on “everything”.
+
+Heuristic:
+
+- Toolbar/menu views should read only the minimum state needed (IDs, small flags).
+- Prefer computed “projection” properties on the manager that return simple values.
 
 ## Narrow reads inside hot loops
 
 Avoid repeatedly reading the same observable property inside a `ForEach` body when you can capture once:
 
 ```swift
-// Prefer capturing once per body evaluation
 var body: some View {
     let activeID = manager.activeItemID
 
@@ -19,31 +29,11 @@ var body: some View {
 }
 ```
 
-This reduces repeated reads, reduces the chance of accidentally widening dependencies, and makes the tracking surface explicit.
+This reduces repeated reads, and—more importantly—makes the dependency surface explicit.
 
-## `shouldNotifyObservers` and “equatable” notification
+## Mutation granularity: collections and `_modify`
 
-When you expand the `@Observable` macro, you’ll find helper overloads that decide whether a `set` should notify observers.
-
-Conceptually:
-
-```swift
-func shouldNotifyObservers<T>(_ old: T, _ new: T) -> Bool { true }                  // non-Equatable
-func shouldNotifyObservers<T: Equatable>(_ old: T, _ new: T) -> Bool { old != new } // Equatable
-func shouldNotifyObservers<T: AnyObject>(_ old: T, _ new: T) -> Bool { old !== new } // identity
-```
-
-Implications:
-
-- **Non-Equatable value types**: any `set` notifies, even if the value is “logically the same”.
-- **Equatable value types**: `set` can be a no-op if values are equal.
-- **Reference types**: notification depends on identity unless the type is also `Equatable`.
-
-Practical rule: make observable value types `Equatable` whenever it is semantically correct.
-
-## `_modify` always notifies
-
-In-place mutations (e.g., appending to an array, mutating an element via subscript, sorting) go through `_modify` accessors. `_modify` avoids equality checks because checking equality would require copying or otherwise materializing the old value.
+In-place mutations (e.g., `append`, `sort`, mutating an element through a subscript) tend to produce **broad invalidations** because they mutate the storage in place.
 
 ```swift
 @Observable
@@ -51,82 +41,42 @@ final class Model {
     var items: [String] = ["A", "B", "C"]
 }
 
-model.items.append("D")         // in-place mutation -> notifies
-model.items.sort()              // in-place mutation -> notifies
-model.items = model.items       // full assignment -> may *not* notify if Equatable
+model.items.append("D")  // in-place mutation -> notifies observers
+model.items.sort()       // in-place mutation -> notifies observers
 ```
 
-This is why “mutate collections directly” can cause broad invalidations in large trees.
+**Heuristic:** for large lists, prefer *row-level* observable references (one `@Observable` per row item) over storing everything in one big observable array.
 
-## Choose value vs reference semantics in collections
+## Choose value vs reference semantics in lists
 
 The element type of a collection materially changes update granularity:
 
-- **Value elements (structs)**: mutating an element often mutates the whole collection value → broader notification.
+- **Value elements (structs)**: mutating one element often mutates the whole collection value → broader notification.
 - **Reference elements (`@Observable` classes)**: mutating a property on one element can localize updates to views that read that element’s properties.
 
 Use reference semantics for list entities when you want “row-level” updates.
-
-## Version counters for large structures
-
-When a collection is large or deeply nested, observing the full structure can be expensive.
-
-A common pattern is:
-
-- keep the structure in a non-public store
-- expose a cheap `itemsVersion` counter that increments on mutation
-
-```swift
-@Observable
-final class Store {
-    private var items: [Item] = []
-    var itemsVersion: UInt64 = 0
-
-    func add(_ item: Item) {
-        items.append(item)
-        itemsVersion &+= 1
-    }
-
-    func snapshot() -> [Item] { items }
-}
-
-struct ItemsView: View {
-    @Environment(\.store) private var store
-
-    var body: some View {
-        let _ = store.itemsVersion // dependency
-        let items = store.snapshot()
-        return List(items) { ItemRow(item: $0) }
-    }
-}
-```
-
-This trades “fine grained change tracking” for explicit invalidation boundaries.
 
 ## `@ObservationIgnored`
 
 Mark properties that should not participate in observation:
 
-- internal indices and caches
-- callbacks and closures
-- bookkeeping state
+- caches and indices
+- callbacks/closures
+- non-observable “backing stores” that would explode dependencies
 
 ```swift
 @Observable
 final class Manager {
     var visibleItems: [Item] = []
 
-    @ObservationIgnored
-    private var index: [Item.ID: Item] = [:]
-
-    @ObservationIgnored
-    var onRemoval: ((Item.ID) -> Void)?
+    @ObservationIgnored private var index: [Item.ID: Item] = [:]
+    @ObservationIgnored var onRemoval: ((Item.ID) -> Void)?
 }
 ```
 
 ## Observation outside SwiftUI
 
-### `withObservationTracking` (OS 17+ era)
+### `withObservationTracking` (macOS 14+ era)
 
 Use `withObservationTracking` to rerun work when the observed properties change:
 
@@ -142,17 +92,15 @@ func observeCounter(_ counter: Counter) {
 }
 ```
 
-### `Observations` async sequence (OS 26+)
+### `Observations` async sequence (macOS Tahoe 26 + Swift 6.2)
 
-On macOS 26+, `Observations` provides an `AsyncSequence` of **transactional** updates.
+On macOS 26+, `Observations` provides an `AsyncSequence` of **transactional** updates (synchronous mutations coalesce until the next suspension point).
 
 ```swift
 import Observation
 
 @Observable
-final class Counter {
-    var count = 0
-}
+final class Counter { var count = 0 }
 
 @MainActor
 func printChanges(counter: Counter) async {
@@ -165,34 +113,17 @@ func printChanges(counter: Counter) async {
 
 Prefer `Observations` when:
 
-- you need a long-lived stream of state changes
-- you want transactional snapshots (coalesced synchronous mutations)
+- you need a long-lived stream of changes
+- you want transactional snapshots (avoid intermediate states during a burst of synchronous writes)
+- you are building “auto-save on change” behaviors (common in multi-window macOS apps)
 
-## Manual tracking for ignored backing stores
+## Compile-checked examples in this repo
 
-The macro instruments stored properties. If you keep data in an ignored store (KVO bridges, throttled values, derived caches), you may need to manually track and notify:
+- [`ObservationExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/ObservationExamples.swift)
 
-```swift
-@Observable
-final class Bridge {
-    @ObservationIgnored private var _progress: Double = 0
+## Primary sources (for verification)
 
-    var progress: Double {
-        access(keyPath: \.progress)
-        return _progress
-    }
-
-    func updateProgress(_ value: Double) {
-        guard _progress != value else { return }
-        _$observationRegistrar.willSet(self, keyPath: \.progress)
-        _progress = value
-        _$observationRegistrar.didSet(self, keyPath: \.progress)
-    }
-}
-```
-
-## Further reading
-
-- Apple: `withObservationTracking` and Observation overview
-- Swift Evolution: SE-0395 Observability
-- Swift 6.2: `Observations` (AsyncSequence)
+- Observation framework overview: https://developer.apple.com/documentation/Observation
+- `Observations` API: https://developer.apple.com/documentation/observation/observations
+- Observability proposal (macro model): https://github.com/apple/swift-evolution/blob/main/proposals/0395-observability.md
+- Transactional observation pitch/discussion: https://forums.swift.org/t/pitch-transactional-observation-of-values/78315

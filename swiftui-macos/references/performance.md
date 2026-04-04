@@ -1,18 +1,47 @@
-# Performance
+# Performance (macOS SwiftUI)
 
-## View Identity
+Performance work in SwiftUI should be measurement-driven. On macOS Tahoe 26 and Xcode 26, SwiftUI performance tooling improved significantly (new SwiftUI instrument + cause-and-effect graph).
 
-SwiftUI's attribute graph tracks views by their **type** and **position** in the view tree. Understanding this is fundamental to avoiding unnecessary view destruction and recreation.
+## Measure first: Instruments (Xcode 26)
 
-**Structural identity** (`if`/`else`, `switch`) creates `_ConditionalContent<TrueContent, FalseContent>` — a generic enum with two distinct type parameters. When the branch changes, the attribute graph sees a different active type and destroys the old view's node entirely (including all `@State`, running `.task` modifiers, and platform backing views), then creates a new one. This is not a "re-render" — it's destruction and construction.
+When debugging “why is this view updating?” or “why is scrolling janky?”:
 
-**Ternary for modifier values** preserves identity because the view type doesn't change — only a property value does:
+1. Product → Profile (Instruments).
+2. Choose the **SwiftUI** instrument/template.
+3. Reproduce the issue.
+4. Inspect the **cause-and-effect** graph to see which state mutations triggered which view updates.
+5. Use the “hot” nodes as the basis for fixes.
+
+Notes:
+
+- Xcode 26 replaced older “View Body”/“View Properties” instruments with the newer SwiftUI instrument template.
+- For quick localization checks, combine Instruments with debug-only `_printChanges()` (see `references/workflows.md`).
+
+## SwiftUI 26 list improvements are not a substitute for good identity
+
+SwiftUI 26 includes large performance gains for big lists on macOS, but the classic failure modes still apply:
+
+- unstable identity (`.id(UUID())`)
+- re-sorting/re-filtering in `body` without caching
+- row bodies that read “too much” observable state (global invalidations)
+
+Treat framework improvements as headroom, not as permission to ignore identity discipline.
+
+## View identity
+
+SwiftUI tracks view identity primarily by **type** and **position** in the view tree. Identity mistakes are a common source of “why did my state reset?” and “why did this task restart?” issues.
+
+### Structural identity (`if`/`else`, `switch`)
+
+Branching produces `_ConditionalContent<TrueContent, FalseContent>`. When the branch changes, SwiftUI treats it as a different identity and will destroy the previous subtree (including `@State`, running `.task`s, and backing platform views), then create a new subtree.
+
+Prefer changing *modifier values* over changing the *view structure* when identity must be preserved:
 
 ```swift
-// Good: same view, different opacity — identity preserved
-.opacity(isVisible ? 1 : 0)
+// Good: same view identity; only a value changes
+content.opacity(isVisible ? 1 : 0)
 
-// Bad: two different views, recreated on every toggle
+// Risky: identity changes when the structure changes
 if isVisible {
     content
 } else {
@@ -20,11 +49,23 @@ if isVisible {
 }
 ```
 
-Use `if`/`else` only when branches are structurally different views that genuinely need different identities.
+## The `.id()` modifier
 
-## Equatable Views
+`.id()` overrides identity. When the value changes, SwiftUI destroys and recreates the view subtree.
 
-Conform views to `Equatable` when body is expensive and inputs are few value types:
+```swift
+// Catastrophic: new UUID each render -> recreates every time
+ItemRow(item: item).id(UUID())
+
+// Correct: stable identity
+ItemRow(item: item).id(item.id)
+```
+
+Use `.id(...)` only when you intentionally want a reset boundary (e.g., to reset scroll position). Never use a value that changes on every body evaluation.
+
+## Equatable views
+
+If a view’s inputs are small, stable value types, conforming to `Equatable` can help SwiftUI skip re-evaluating the view’s body when the values haven’t changed.
 
 ```swift
 struct ExpensiveChart: View, Equatable {
@@ -35,183 +76,72 @@ struct ExpensiveChart: View, Equatable {
         lhs.data == rhs.data && lhs.style == rhs.style
     }
 
-    var body: some View { ... }
+    var body: some View { /* expensive */ }
 }
 ```
 
-SwiftUI skips body re-evaluation when comparison returns `true`.
+**Caveat:** avoid `Equatable` views whose inputs are reference-typed model objects (for example, SwiftData `@Model` instances). Compare identifiers or value snapshots instead.
 
-**Trap**: SwiftData `@Model` types are reference types. Comparing two references to the same object always returns `true`. Don't use `Equatable` on views that take `@Model` instances as direct input — or compare on value-type identifiers only.
+## Representables: optimize `updateNSView`, don’t assume call suppression
 
-## NSViewRepresentable + Equatable
+For `NSViewRepresentable`, you must assume `updateNSView(_:context:)` can run frequently. Make it:
 
-Conform `NSViewRepresentable` types to `Equatable` to prevent unnecessary `updateNSView` calls. Without this, `updateNSView` runs on every parent body re-evaluation. See `references/platform.md`.
+- fast
+- idempotent
+- internally diffed (early-out when the desired state matches the last applied state)
 
-## The .id() Modifier
-
-`.id()` overrides a view's structural identity. When the value changes, SwiftUI destroys the old view and creates a new one — all `@State` is reset, all `task()` modifiers restart.
+Common pattern: store “last applied” values in the coordinator.
 
 ```swift
-// CATASTROPHIC: new UUID every render — view is recreated on every body call
-ForEach(items) { item in
-    ItemRow(item: item)
-        .id(UUID())  // Destroys and recreates ItemRow every time
-}
-
-// Correct: stable identity from the item
-ForEach(items) { item in
-    ItemRow(item: item)
-        .id(item.id)
+final class Coordinator {
+    var lastAppliedText: String?
 }
 ```
 
-Legitimate uses: forcing a view reset (e.g., `.id(selectedTab)` on a detail view to reset scroll position). But never use a value that changes on every body evaluation.
+Then in `updateNSView`, only apply changes when different.
 
-## AnyView
+## Avoid `AnyView`
 
-Avoid `AnyView`. It erases type information SwiftUI uses for efficient diffing. Use `@ViewBuilder`, `Group`, or generics instead.
+`AnyView` erases type information that SwiftUI uses to diff efficiently. Prefer `@ViewBuilder`, `Group`, and generics.
 
-## View Initializers
+## Initializers must be trivial
 
-Must be trivial. No networking, no file I/O, no heavy computation. Move work to `.task { }`.
+View initializers must not perform I/O or heavy work. Move work to `.task {}` or to model layers.
 
-## Body Evaluation
+## Body evaluation: keep hot paths cheap
 
-`body` is called whenever any observed property changes — and the entire body is re-evaluated, not just the part that uses the changed property (observation scoping happens at the *view* level, not the *expression* level). Move expensive derivations out:
+`body` is recomputed whenever any tracked dependency of that view changes. Avoid expensive derivations inline:
 
 ```swift
-// Bad: sorts on every body evaluation
-var body: some View {
-    ForEach(items.sorted(by: { $0.date > $1.date })) { ... }
-}
+// Bad: sorts on every recompute
+ForEach(items.sorted(by: { $0.date > $1.date })) { /* ... */ }
 
-// Good: derive once per evaluation
-var body: some View {
-    let sorted = items.sorted(by: { $0.date > $1.date })
-    ForEach(sorted) { ... }
-}
+// Better: derive once per recompute
+let sorted = items.sorted(by: { $0.date > $1.date })
+ForEach(sorted) { /* ... */ }
 ```
 
-For expensive derivations that change rarely, cache in `@State` with explicit invalidation via `onChange`.
+For expensive derivations that change rarely, cache in `@State` with explicit invalidation.
 
-## ForEach Optimization
+## ForEach optimization
 
-Extract loop bodies into separate view structs. This gives each item its own observation scope — changes to item N only re-evaluate that item's body. See `references/observation.md` for details.
+Extract row bodies into separate `View` structs. This gives each row its own observation scope so changes can localize to a single row.
 
-Avoid expensive inline transforms in `ForEach` initializers (e.g., `items.filter { ... }.sorted { ... }`) when repeated often.
+## Continuous gestures: keep per-frame values in `@State`
 
-For hot-path collection operations that don't need a materialized array, use lazy sequences:
+Gesture updates can occur at display refresh rates. Store gesture-driven values (`offset`, `scale`, `rotation`) in `@State` rather than an `@Observable` model to avoid routing every frame through the observation pipeline.
 
-```swift
-// Allocates intermediate arrays
-let minPosition = items.filter(\.isPinned).map(\.position).min()
+## Canvas and TimelineView
 
-// No intermediate allocations
-let minPosition = items.lazy.filter(\.isPinned).map(\.position).min()
-```
+Use `Canvas` for immediate-mode drawing when a view tree of hundreds of shapes would be expensive.
 
-## Lazy Stacks
+Use `TimelineView` for scheduled updates (e.g., continuous animations) without driving the entire parent view tree.
 
-`LazyVStack` / `LazyHStack` inside `ScrollView` for large or dynamic collections. Eager stacks instantiate all children immediately.
+## Compile-checked examples in this repo
 
-Flag eager stacks with more than ~20-30 static children or any dynamic collection of meaningful size.
+- [`IdentityExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/IdentityExamples.swift)
 
-## Async Work
+## Primary sources (for verification)
 
-Prefer `.task { }` over `.onAppear { }` for async work — `.task` cancels automatically when the view disappears.
-
-## Cached Values for Animation
-
-Store display values in `@State` when they need to persist through deletion animations:
-
-```swift
-@State private var cachedTitle: String = ""
-
-var body: some View {
-    Text(cachedTitle)
-        .onChange(of: tab.title, initial: true) { _, new in
-            cachedTitle = new
-        }
-}
-```
-
-Without caching, the title flashes to empty during removal animation as the underlying data is deleted before the animation completes.
-
-## @State for Animated and Gestured Values
-
-Continuous gestures (`DragGesture`, `MagnifyGesture`, `RotateGesture`) fire at up to 120Hz on ProMotion displays. Each mutation through `@Observable` goes through: `_modify` → `willSet` → `didSet` → observation notification → body re-evaluation → `access()` thread-local lookup → re-register tracking. **Every frame.**
-
-`@State` skips the entire observation pipeline — SwiftUI owns the storage directly.
-
-```swift
-// Bad: 120 observation cycles per second during drag
-@Observable class Model {
-    var dragOffset: CGFloat = 0  // Don't put gesture values here
-}
-
-// Good: @State bypasses observation entirely
-@State private var dragOffset: CGFloat = 0
-```
-
-**Rule**: `@State` for values driven by gestures or continuous animation (offset, scale, opacity, rotation). `@Observable` for data that changes infrequently (model state, configuration, user input).
-
-Note: standard `withAnimation(.spring) { value = x }` does NOT cause per-frame body evaluation — Core Animation handles the interpolation. The overhead is specifically with **continuous gestures** that fire rapid mutations.
-
-## Canvas — Imperative 2D Drawing
-
-`Canvas` provides an immediate-mode drawing context for complex 2D rendering that would be expensive as a view tree. Unlike composing `Shape` and `Path` views, `Canvas` draws into a single backing store with no per-element view overhead.
-
-```swift
-Canvas { context, size in
-    for particle in particles {
-        let rect = CGRect(x: particle.x, y: particle.y, width: 4, height: 4)
-        context.fill(Path(ellipseIn: rect), with: .color(particle.color))
-    }
-}
-```
-
-**When to use:**
-- Particle systems, visualizations, custom charts with hundreds+ of elements
-- Any rendering where the number of drawn elements is dynamic and potentially large
-- Cases where you'd otherwise create hundreds of `Circle()` or `Rectangle()` views
-
-**When NOT to use:**
-- Interactive content that needs per-element hit testing (use views)
-- Simple layouts with a few shapes (the view tree overhead is negligible)
-
-`Canvas` supports symbols (resolved views), images, text, and gradients. It does not support animations or gestures on individual drawn elements — pair with `TimelineView` for animation.
-
-## TimelineView — Continuous Rendering
-
-`TimelineView` drives view updates on a schedule — use for animations that need per-frame control beyond what `withAnimation` provides.
-
-```swift
-TimelineView(.animation) { timeline in
-    Canvas { context, size in
-        let elapsed = timeline.date.timeIntervalSince(startDate)
-        // Draw frame based on elapsed time
-    }
-}
-```
-
-**Schedules:**
-- `.animation` — every frame (display link, ~60-120Hz). Use for smooth continuous animation.
-- `.periodic(from:by:)` — fixed interval. Use for clocks, timers, periodic updates.
-- `.everyMinute` — once per minute. Use for time displays.
-
-`TimelineView` only re-evaluates its content closure on schedule ticks — it doesn't force the entire parent view tree to update. Combine with `Canvas` for efficient per-frame rendering without view tree overhead.
-
-## drawingGroup()
-
-For views with many overlapping layers (complex gradients, particle effects, layered shapes), `drawingGroup()` renders the entire subtree into a single Metal texture:
-
-```swift
-ComplexVisualization()
-    .drawingGroup()  // Flattens into one GPU-composited layer
-```
-
-Use when Instruments shows excessive CA layer compositing. Don't use on views with interactive children — it disables hit testing within the group.
-
-## Observation
-
-See `references/observation.md` for observation tracking discipline — state capture, version counters, `@ObservationIgnored`, and scope minimization. Observation problems are the most common performance issue in non-trivial SwiftUI apps.
+- WWDC25: What’s new in SwiftUI (SwiftUI instrument, list improvements): https://developer.apple.com/videos/play/wwdc2025/256/
+- Xcode 26 release notes (Instruments SwiftUI template changes): https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes

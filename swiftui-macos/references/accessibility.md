@@ -4,8 +4,8 @@ macOS accessibility is not only VoiceOver. It includes:
 
 - full keyboard access and focus rings
 - predictable shortcuts
-- readable typography and scaling
-- reduce motion / reduce transparency
+- readable typography and text-size scaling
+- Reduce Motion / Reduce Transparency
 
 ## Labels, values, and actions
 
@@ -25,7 +25,7 @@ For dynamic values:
 
 ```swift
 Text(progressText)
-    .accessibilityValue(Text("Progress \(percent)%"))
+    .accessibilityValue(Text("Progress \(percent) percent"))
 ```
 
 ## Keyboard shortcuts
@@ -37,13 +37,14 @@ Button("New Tab") { tabManager.createTab(url: nil) }
     .keyboardShortcut("t", modifiers: [.command])
 ```
 
+Also consider scene-level shortcuts (for window creation) when using multiple window scenes.
+
 ## Focus management
 
 Use `@FocusState` and ensure a logical focus order.
 
 ```swift
 @FocusState private var focus: Field?
-
 enum Field { case query }
 
 TextField("Search", text: $query)
@@ -52,11 +53,13 @@ TextField("Search", text: $query)
 .onAppear { focus = .query }
 ```
 
-## Dynamic Type and scaling
+Test with Full Keyboard Access enabled.
+
+## Text size scaling
+
+macOS text-size preferences are not identical to iOS Dynamic Type, but SwiftUI still provides tools to scale UI consistently.
 
 ### Scale fonts
-
-SwiftUI supports scaling fonts relative to a base style:
 
 ```swift
 Text(title)
@@ -93,7 +96,7 @@ Similarly, consider `accessibilityReduceTransparency` when using heavy materials
 
 ## Accessibility identifiers for UI tests
 
-Stable identifiers help both UI tests and assistive tooling:
+Stable identifiers help UI tests and assistive tooling:
 
 ```swift
 Button("Save") { save() }
@@ -105,3 +108,8 @@ Button("Save") { save() }
 - Don’t rely on color alone to convey state.
 - Don’t disable keyboard focus by wrapping everything in `onTapGesture` instead of using controls.
 - Don’t animate essential state changes when Reduce Motion is enabled.
+
+## Primary sources (for verification)
+
+- `Font.scaled(by:)`: https://developer.apple.com/documentation/swiftui/font/scaled%28by%3A%29
+- `@ScaledMetric`: https://developer.apple.com/documentation/swiftui/scaledmetric

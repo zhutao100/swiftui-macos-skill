@@ -1,170 +1,195 @@
-# macOS Platform Patterns
+# macOS platform patterns (SwiftUI + AppKit)
+
+This reference covers macOS-specific platform integration patterns: `NSViewRepresentable`, windowing, AppKit bridging, and commands/menus.
+
+> Scope: macOS 15+ (AppKit). For iOS-only counterparts, see `references/scope.md`.
 
 ## NSViewRepresentable
 
 ### Lifecycle
 
 - `makeNSView(context:)` — called once. Create and configure the AppKit view.
-- `updateNSView(_:context:)` — called on every SwiftUI state change that could affect this view. Must be idempotent and efficient.
-- `dismantleNSView(_:coordinator:)` — static cleanup method.
-- `Coordinator` — for delegates, target-action, and any AppKit → SwiftUI bridging.
+- `updateNSView(_:context:)` — called when SwiftUI thinks the representable needs updating. Must be idempotent and fast.
+- `dismantleNSView(_:coordinator:)` — static cleanup hook.
+- `Coordinator` — delegates, target-action, AppKit → SwiftUI bridging, and “last applied” caching.
 
-### Performance: Equatable Conformance
+### Performance: internal diffing (recommended)
 
-Conform to `Equatable` to prevent unnecessary `updateNSView` calls:
+Do not assume SwiftUI will suppress `updateNSView` calls. Instead, make updates conditional.
 
 ```swift
-struct BlurView: NSViewRepresentable, Equatable {
-    let radius: CGFloat
+struct CodeTextView: NSViewRepresentable {
+    @Binding var text: String
 
-    func makeNSView(context: Context) -> NSVisualEffectView { ... }
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        view.material = ...
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var lastAppliedText: String?
     }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.radius == rhs.radius
+    func makeCoordinator() -> Coordinator { .init() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        let textView = NSTextView()
+        textView.delegate = context.coordinator
+        scroll.documentView = textView
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let textView = scroll.documentView as? NSTextView else { return }
+        if context.coordinator.lastAppliedText != text {
+            context.coordinator.lastAppliedText = text
+            textView.string = text
+        }
     }
 }
 ```
 
-Without `Equatable`, `updateNSView` runs on every parent body re-evaluation — even when inputs haven't changed. This is critical for views wrapping expensive AppKit content.
+See the compile-checked example:
 
-## Multi-Window State
+- [`PlatformExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/PlatformExamples.swift)
 
-```
-App level
-├── @State var appState = AppState()           // Global, shared across all windows
-└── WindowGroup {
-        WindowRoot()
-            .environment(appState)
-    }
+## Multi-window scene patterns (macOS)
 
-WindowRoot
-├── @State private var windowState = WindowState()  // Per-window, created here
-├── .environment(\.windowState, windowState)
-└── ContentView()
-```
+### Prefer `openWindow` / `dismissWindow`
 
-- **Global state** (data model, user settings): create once at app level, inject into `WindowGroup`.
-- **Per-window state** (sidebar width, active selection, split position): create with `@State` in the window's root view, inject via environment.
-- Track window identity via `@Environment(\.windowID)` or weak `NSWindow` references.
-- Pages/documents can move between windows — handle ownership transfer explicitly.
-
-## NSHostingView — Embedding SwiftUI in AppKit
-
-The reverse of `NSViewRepresentable`. Use `NSHostingView` to embed SwiftUI views inside AppKit view hierarchies — common in `NSWindowController`, `NSViewController`, toolbar items, or overlay systems.
+Use environment actions rather than “find the NSWindow”.
 
 ```swift
-final class OverlayHostingView<Content: View>: NSHostingView<Content> {
-    let shouldPassThrough: () -> Bool
+struct MainView: View {
+    let itemID: UUID
+    @Environment(\.openWindow) private var openWindow
 
-    init(rootView: Content, shouldPassThrough: @escaping () -> Bool) {
-        self.shouldPassThrough = shouldPassThrough
-        super.init(rootView: rootView)
+    var body: some View {
+        Button("Open Item Window") { openWindow(value: itemID) }
     }
+}
+```
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+### Use `WindowGroup(for:)` for value-identified windows
 
-    // Pass through hit tests when overlay is inactive
+When each window corresponds to a particular value (document ID, item ID), declare a typed window group.
+
+```swift
+@main
+struct MyApp: App {
+    var body: some Scene {
+        WindowGroup { RootView() }
+
+        WindowGroup(for: UUID.self) { $itemID in
+            ItemWindow(itemID: itemID)
+        }
+    }
+}
+```
+
+**Important:**
+
+- Prefer passing lightweight identifiers (not large value models).
+- The value should be **Hashable** and **Codable** for reuse and state restoration.
+
+### Use `Window` for single-instance windows
+
+If a window should exist at most once (global inspector), use `Window`:
+
+```swift
+@main
+struct MyApp: App {
+    var body: some Scene {
+        WindowGroup { RootView() }
+        Window("Inspector", id: "inspector") { InspectorView() }
+    }
+}
+```
+
+### Per-window vs shared state
+
+- **Global state** (data model, settings): create once at app level, inject into `WindowGroup`.
+- **Per-window state** (selection, split positions): create at the window root view with `@State`, inject via environment.
+
+Prefer keying state to the **window value** (from `WindowGroup(for:)`) rather than trying to fetch a window identifier from the environment.
+
+## Commands, menus, and shortcuts (macOS)
+
+macOS users expect menu items and keyboard shortcuts for core actions. Prefer SwiftUI `commands` over ad-hoc AppKit menu manipulation.
+
+```swift
+struct AppCommands: Commands {
+    var body: some Commands {
+        CommandMenu("Workspace") {
+            Button {
+                // perform action
+            } label: {
+                Label("New Window", systemImage: "macwindow")
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+        }
+    }
+}
+```
+
+Notes:
+
+- On macOS Tahoe 26, menu items can show icons more consistently; using `Label` is the forward-compatible approach.
+- Keep command state narrow (avoid reading a broad `@Observable` manager inside the command tree).
+
+See:
+
+- [`MenuCommandExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/MenuCommandExamples.swift)
+
+## NSHostingView — embedding SwiftUI in AppKit
+
+Use `NSHostingView` to embed SwiftUI in AppKit view hierarchies (`NSWindowController`, `NSToolbarItem`, overlays).
+
+```swift
+final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
+    var shouldPassThrough: () -> Bool = { false }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         shouldPassThrough() ? nil : super.hitTest(point)
     }
 }
 ```
 
-**Key patterns:**
-- **Subclass for hit-test control** — `NSHostingView` captures all hits by default. Override `hitTest(_:)` to pass through when the SwiftUI content shouldn't intercept clicks (transparent overlays, inactive HUDs).
-- **Sizing**: `NSHostingView` uses `intrinsicContentSize` from the SwiftUI view. For views that should fill their container, set `translatesAutoresizingMaskIntoConstraints = false` and pin edges.
-- **Environment**: Values set via `.environment()` on the root view work normally. For values that change dynamically, update via `rootView = updatedView` — but prefer `@Observable` objects injected once.
-- **Lifecycle**: The hosting view owns the SwiftUI view's lifecycle. Removing the hosting view from the hierarchy triggers `onDisappear` and cancels `.task` modifiers.
-- **Cursor management**: If the SwiftUI content sits above views that set cursors (e.g., WebKit), override `cursorUpdate(with:)` and `resetCursorRects()` to control cursor behavior.
+Patterns:
 
-## AppKit Bridging
+- Override `hitTest(_:)` for transparent overlays that shouldn’t intercept clicks.
+- Use Auto Layout constraints to pin edges when the hosting view should fill its container.
+- Prefer injecting `@Observable` environment objects once (avoid rebuilding the root view every update).
 
-Use AppKit only for capabilities SwiftUI lacks:
+## App delegate integration (macOS)
 
-| Need | AppKit Approach |
-|---|---|
-| Window chrome (titlebar, toolbar, styleMask) | `NSWindow` via `NSApp.keyWindow` or tracked reference |
-| Drag and drop | `NSDraggingSource` / `NSDraggingDestination` via coordinator |
-| System blur effects | `NSVisualEffectView` or `CABackdropLayer` |
-| Text input with special behavior | `NSTextField` subclass via `NSViewRepresentable` |
-| Pasteboard operations | `NSPasteboard` in coordinator or manager |
-
-For method swizzling or private API usage: document thoroughly, isolate in dedicated types, and guard with availability checks where possible.
-
-## macOS-Specific Scenes
-
-```swift
-@main
-struct MyApp: App {
-    var body: some Scene {
-        WindowGroup { ContentView() }
-        Settings { SettingsView() }                              // Preferences (Cmd+,)
-        MenuBarExtra("Status", systemImage: "circle") {
-            MenuView()
-        }
-        Window("Inspector", id: "inspector") { InspectorView() }
-    }
-}
-```
-
-## Programmatic Window Management
-
-Use `@Environment(\.openWindow)` to open windows — not AppKit hacks:
-
-```swift
-struct MyView: View {
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        Button("Open Inspector") {
-            openWindow(id: "inspector")           // By window ID
-            openWindow(value: document.id)        // By value (typed)
-        }
-    }
-}
-```
-
-Requires a matching `Window` or `WindowGroup` scene declaration. For dismissing, use `@Environment(\.dismissWindow)`.
-
-## App Delegate Integration
-
-Use `@NSApplicationDelegateAdaptor` for app lifecycle events SwiftUI doesn't cover:
+Use `@NSApplicationDelegateAdaptor` only for lifecycle events without a SwiftUI equivalent.
 
 ```swift
 @main
 struct MyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-
-    var body: some Scene { ... }
+    var body: some Scene { WindowGroup { ContentView() } }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) { ... }
-    func application(_ app: NSApplication, open urls: [URL]) { ... }
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) { /* ... */ }
 }
 ```
 
-Only use for events that have no SwiftUI equivalent (URL handling has `.onOpenURL`, so prefer that).
+Prefer SwiftUI equivalents when available (`.onOpenURL`, `.commands`, scene configuration).
 
-## macOS-Specific Modifiers
+## macOS-specific interaction expectations
 
-- `.windowStyle(.hiddenTitleBar)`, `.windowToolbarStyle(.unified)`, `.windowToolbarStyle(.unifiedCompact)`
-- `.windowResizability(.contentSize)`, `.windowResizability(.contentMinSize)`
-- `.defaultSize(width:height:)`, `.frame(minWidth:idealWidth:maxWidth:minHeight:idealHeight:maxHeight:)`
-- `.handlesExternalEvents(matching:)` for deep linking to specific windows
-- `.onOpenURL { }` for URL scheme handling
+macOS interaction differs fundamentally from touch-first UX:
 
-## Interaction Patterns
+- **Hover**: `.onHover { ... }` for discoverability.
+- **Context menus**: `.contextMenu { ... }` are expected.
+- **Keyboard shortcuts**: `.keyboardShortcut(...)` for core actions.
+- **Focus navigation**: `@FocusState` + test with Full Keyboard Access.
 
-macOS interactions differ fundamentally from iOS:
+## Compile-checked examples in this repo
 
-- **No 44pt tap targets.** macOS uses precise cursors. Keyboard navigation and focus rings are the equivalent accessibility requirements.
-- **Hover states**: `.onHover { isHovered = $0 }` for interactive feedback. Essential for discoverability — users expect visual response on hover.
-- **Right-click menus**: `.contextMenu { }` is expected on virtually every interactive element.
-- **Keyboard shortcuts**: `.keyboardShortcut("n", modifiers: .command)` for frequent actions.
-- **Focus management**: `@FocusState` for keyboard navigation. Tab order must be logical. Test with Full Keyboard Access.
-- **Drag and drop**: Expected for reordering, file import, cross-app data transfer. Native `draggable()` / `dropDestination()` for simple cases; AppKit bridging for complex scenarios.
+- [`PlatformExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/PlatformExamples.swift)
+- [`WindowingExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/WindowingExamples.swift)
+- [`MenuCommandExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/MenuCommandExamples.swift)
+
+## Primary sources (for verification)
+
+- WWDC22: multi-window SwiftUI patterns: https://developer.apple.com/videos/play/wwdc2022/10061/

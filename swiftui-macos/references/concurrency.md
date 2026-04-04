@@ -1,116 +1,109 @@
-# Swift concurrency for SwiftUI on macOS
+# Swift concurrency for SwiftUI on macOS (Swift 6.x)
 
-This reference focuses on the concurrency behaviors that most often affect SwiftUI correctness and performance: **actor isolation**, **execution ordering**, and **long-lived tasks**.
+This reference focuses on concurrency behaviors that most often affect SwiftUI correctness and performance on macOS: **actor isolation**, **execution ordering**, and **long-lived tasks**.
 
-## Ordering and scheduling: `Task {}` vs `Task.immediate {}`
+> macOS note: “Main thread” and “MainActor” are related but not identical concepts. Treat UI mutations as **MainActor-only** unless you have a proven exception.
 
-Unstructured tasks (`Task { ... }`) do not start synchronously; they enqueue work and may run after the current synchronous scope completes. If you need “run now (until first suspension) when already on the right executor”, use **immediate tasks**:
+## Ordering and scheduling: `Task {}` vs `Task.immediate {}` (Swift 6.2)
+
+Unstructured tasks (`Task { ... }`) enqueue work and may run after the current synchronous scope completes.
+
+Swift 6.2 adds **immediate tasks** (`Task.immediate`) to start executing immediately (until the first suspension point) when already on a suitable executor (motivated by SE-0472).
 
 ```swift
-print("1")
-Task { @MainActor in print("2") }
-print("3")
-// typical output: 1, 3, 2
+@MainActor
+func demo(log: (String) -> Void) {
+    log("1")
+    Task { @MainActor in log("2") }
+    log("3")
+    // typical: 1, 3, 2
 
+    #if swift(>=6.2)
+    log("A")
+    Task.immediate { @MainActor in log("B") }
+    log("C")
+    // when already on MainActor: A, B, C
+    #endif
+}
+```
+
+Use `Task.immediate` when you need predictable ordering on the *current* executor and want Task semantics (cancellation, priority, task locals) without an extra hop.
+
+## Swift 6.2 isolation spellings: `nonisolated(nonsending)` vs `@concurrent`
+
+Swift 6.2 accepted SE-0461 (with modifications) and introduces explicit spellings for two behaviors you care about:
+
+- `nonisolated(nonsending)`: **stay on the caller’s actor** (useful for UI-adjacent helpers that touch non-Sendable state)
+- `@concurrent`: **always switch off an actor** (useful for CPU-bound work you want to run concurrently)
+
+```swift
+// Caller-actor behavior (good for UI code paths that must not hop unexpectedly)
 #if swift(>=6.2)
-print("1")
-Task.immediate { @MainActor in print("2") }  // runs inline when already on MainActor
-print("3")
-// output (when already on MainActor): 1, 2, 3
+nonisolated(nonsending)
 #endif
+func updateCache() async { /* ... */ }
+
+// Always switch off actor behavior (good for CPU-bound work)
+#if swift(>=6.2)
+@concurrent
+#endif
+func hashLargeFile() async -> Digest { /* ... */ }
 ```
 
-Use `Task.immediate` when:
+Practical rule:
 
-- you need predictable ordering on the same executor
-- you need Task semantics (cancellation, priority, task locals) but want to avoid an unnecessary hop
+- If calling an async helper from a SwiftUI view or a `@MainActor` model, assume you are on MainActor and be deliberate about whether the helper should *inherit* that isolation or *escape* it.
 
-Avoid using it as a replacement for `DispatchQueue.sync`.
+## Default Actor Isolation (Xcode / SwiftPM)
 
-## Actor isolation in SwiftUI
+Modern toolchains can set **Default Actor Isolation = MainActor** for UI targets. This means many unannotated declarations are implicitly MainActor-isolated unless you opt out.
 
-### Default actor isolation (Swift 6.2)
+### SwiftPM: `SwiftSetting.defaultIsolation`
 
-Swift 6.2 introduces configuration that can make unannotated code default to `@MainActor` (per target/module). This is often desirable for UI-heavy targets, but it changes the meaning of “unannotated” code, and it can make `Task {}` inherit MainActor more frequently than expected.
-
-When reviewing code:
-
-- check whether the target uses default actor isolation
-- prefer explicit annotations at boundaries (UI vs background)
-
-### `Task {}` inherits isolation
-
-`Task {}` inherits the caller’s isolation. This is a feature, but it surprises people who treat `Task {}` as “background work”.
-
-If you must break inheritance (CPU-bound work, parsing, hashing), use `Task.detached` or an explicit background mechanism.
-
-### Run work on the main actor
-
-Prefer `await MainActor.run { ... }` when already in async code:
+For packages, SwiftPM exposes a setting to configure default isolation:
 
 ```swift
-func load() async {
-    let data = try await fetch()
-    await MainActor.run {
-        model.data = data
-    }
-}
+// Package.swift
+.target(
+  name: "MyPackage",
+  swiftSettings: [
+    .defaultIsolation(MainActor.self)
+  ]
+)
 ```
 
-Use `MainActor.assumeIsolated { ... }` only when you have strong evidence you are already on MainActor (e.g., AppKit delegate callbacks guaranteed on main).
+Always validate behavior against your toolchain’s diagnostics; default isolation interacts with compiler upcoming features and project settings.
 
-## `@concurrent` for “always switch off actor”
+## `Task {}` inherits isolation (do not assume background)
 
-Swift introduces `@concurrent` for async functions that must always switch off an actor to run concurrently:
+`Task {}` inherits the caller’s isolation. If you create a task inside MainActor code, it will typically start on MainActor.
 
-```swift
-struct Decoder: Sendable {
-    @concurrent
-    func decode(_ data: Data) async throws -> Model {
-        try JSONDecoder().decode(Model.self, from: data)
-    }
-}
-```
+If you need to ensure work runs concurrently/off the actor, use either:
 
-This becomes especially relevant when default actor isolation would otherwise keep an unannotated async function on the caller’s actor.
-
-## `#isolation` and isolation-polymorphic APIs
-
-`#isolation` can be used as the default value for an `isolated (any Actor)?` parameter.
-
-This pattern is useful for libraries/helpers that should “run on the caller’s actor” without forcing `@MainActor`:
-
-```swift
-func process(
-    isolation: isolated (any Actor)? = #isolation
-) async {
-    // Runs on the caller’s actor when possible.
-}
-```
+- `Task.detached { ... }` (does not inherit; be strict about Sendable captures)
+- `@concurrent` async helpers (preferred API design surface)
 
 ## Sendable friction and escape hatches
 
-### `sending` and `Task` captures
-
-Swift uses `sending` and `Sendable` checking to prevent data races. `Task { ... }` captures values into a concurrent context; when strict checking is enabled, non-Sendable captures will be errors.
+When strict checking is enabled, captures into concurrent contexts can produce errors for non-Sendable values.
 
 Preferred fixes:
 
 - isolate mutable state in an actor
-- copy value types into the task
-- pass identifiers across actors and refetch on the other side (SwiftData models are not Sendable)
+- copy value types into a task
+- pass identifiers across actors and refetch on the receiving actor (SwiftData models are not Sendable)
 
-### `DispatchQueue.asyncUnsafe`
+### Bridging legacy code: `DispatchQueue.asyncUnsafe`
 
-When you are intentionally bridging legacy code and you fully understand the risks, `DispatchQueue.asyncUnsafe` can be used to bypass Sendable checking.
+When intentionally bridging pre-concurrency code and you fully understand the risk, `DispatchQueue.asyncUnsafe` can bypass Sendable checking for a closure dispatched to a queue.
 
-Treat this as a last resort: it is opting out of compile-time race protection.
+Treat this as a last resort: it opts out of compile-time data-race safety.
 
 ## Long-lived work and cancellation
 
 ### Prefer `.task(id:)` for view-driven work
 
-`.task` is cancellation-aware and is tied to view lifetime.
+`.task(id:)` is cancellation-aware and tied to view lifetime:
 
 ```swift
 struct ProfileView: View {
@@ -125,20 +118,20 @@ struct ProfileView: View {
 }
 ```
 
-`.task(id:)` automatically cancels the previous task when the ID changes and cancels when the view disappears.
+The system cancels the prior task when the ID changes and cancels when the view disappears.
 
-### Periodic background work
+### Periodic background work (macOS)
 
-Avoid polling loops that wake on a fixed cadence when the system can schedule more efficiently.
+Avoid tight polling loops when the system can coalesce work. For background sync, prefer `NSBackgroundActivityScheduler` when it fits your use case.
 
-For macOS background sync, prefer `NSBackgroundActivityScheduler` to let the system coalesce work.
+## Compile-checked examples in this repo
 
-## Isolated `deinit` (Swift 6.2)
+- [`ConcurrencyExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/ConcurrencyExamples.swift)
 
-Swift supports an isolated synchronous `deinit` for actor-isolated classes so cleanup can safely access isolated state.
+## Primary sources (for verification)
 
-Use it for:
-
-- cancelling stored tasks
-- removing observers
-- closing non-Sendable resources
+- Swift 6.2 release notes: https://swift.org/blog/swift-6.2-released/
+- SE-0461: async function isolation: https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md
+- Compiler docs: `nonisolated(nonsending)` by default: https://docs.swift.org/compiler/documentation/diagnostics/nonisolated-nonsending-by-default/
+- SE-0472: starting tasks synchronously: https://github.com/swiftlang/swift-evolution/blob/main/proposals/0472-task-start-synchronously-on-caller-context.md
+- `DispatchQueue.asyncUnsafe`: https://developer.apple.com/documentation/dispatch/dispatchqueue/asyncunsafe%28group%3Aqos%3Aflags%3Aexecute%3A%29

@@ -1,24 +1,25 @@
-# Data flow and state management
+# Data flow and state management (macOS SwiftUI)
 
 ## Architecture: environment-injected managers
 
-For macOS SwiftUI apps, a pragmatic pattern is:
+A pragmatic macOS SwiftUI pattern:
 
 - **manager objects** own logic and long-lived state
-- views are mostly projection + event routing
+- views are projection + event routing
 - managers are injected via the SwiftUI environment
 
 ```swift
 import Observation
 import SwiftUI
 
-@Observable @MainActor
+@MainActor
+@Observable
 final class TabManager {
-    private(set) var tabs: [Tab] = []
-    var activeTabID: Tab.ID?
+    private(set) var tabs: [TabModel] = []
+    var activeTabID: TabModel.ID?
 
-    func createTab(url: URL) { /* ... */ }
-    func closeTab(_ id: Tab.ID) { /* ... */ }
+    func createTab(url: URL?) { /* ... */ }
+    func closeTab(_ id: TabModel.ID) { /* ... */ }
 }
 
 extension EnvironmentValues {
@@ -36,34 +37,22 @@ struct MyApp: App {
         }
     }
 }
-
-struct TabBar: View {
-    @Environment(\.tabManager) private var tabManager
-
-    var body: some View {
-        if let tabManager {
-            /* ... */
-        } else {
-            Text("Missing TabManager")
-        }
-    }
-}
 ```
 
 Notes:
 
 - Using an optional environment value makes dependency wiring explicit.
-- For multi-window apps, decide whether a manager is global (shared) or per-window (instantiate in the window root).
+- For multi-window apps, decide whether a manager is global (shared) or per-window (instantiate in the window root view).
 
 ## Property wrapper decision rules
 
 | Wrapper | Owns storage? | Use when |
 |---|---:|---|
-| `@State` | Yes | view-local, ephemeral UI state; gestures; transient input |
+| `@State` | Yes | view-local, ephemeral UI state; gestures; lightweight reference state you want SwiftUI to own |
 | `@Binding` | No | child view edits parent-owned state |
-| `@Bindable` | No | need bindings into an `@Observable` reference not owned by `@State` |
+| `@Bindable` | No | need bindings into an `@Observable` reference (e.g., toggles/text fields) |
 | `@Environment` | No | dependency injection (managers, settings, system values) |
-| `@Entry` | N/A | define custom environment/focus/transaction keys without boilerplate |
+| `@Entry` | N/A | define custom environment/focused/transaction keys without boilerplate |
 
 ### `@Bindable` example
 
@@ -109,11 +98,11 @@ Avoid `Binding(get:set:)` in `body` unless the transformation is trivial.
 import SwiftData
 
 @Model
-final class Tab {
+final class TabModel {
     var title: String = ""
     var url: URL?
 
-    @Relationship(deleteRule: .cascade, inverse: \Page.tab)
+    @Relationship(deleteRule: .cascade)
     var pages: [Page] = []
 
     @Transient
@@ -124,7 +113,7 @@ final class Tab {
 Guidelines:
 
 - Use `@Transient` for runtime-only properties.
-- Be explicit about delete rules.
+- Be explicit about delete rules and inverses.
 
 ### Background operations with `@ModelActor`
 
@@ -147,17 +136,17 @@ actor DataImporter {
 Rules:
 
 - Don’t pass model objects across actors (models are not `Sendable`).
-- Pass `PersistentIdentifier`/IDs, then refetch on the receiving actor.
+- Pass `PersistentIdentifier`/IDs and refetch on the receiving actor.
 
-### CloudKit syncing constraints (when enabled)
+### CloudKit sync constraints (SwiftData + iCloud)
 
-When you enable CloudKit sync for SwiftData, CloudKit imposes modeling constraints. Common practical rules:
+CloudKit sync has model constraints that are easy to violate:
 
-- avoid uniqueness constraints (`@Attribute(.unique)`, `#Unique`) for synced models
-- ensure **attributes are optional or have default values**
-- ensure **relationships are optional** (CloudKit doesn’t guarantee atomic relationship updates)
+- **Unique constraints aren’t enforceable** across devices when CloudKit sync runs concurrently.
+- **All attributes must be optional or have defaults.**
+- **Relationships must be optional** and have inverses; CloudKit may not save relationship changes atomically.
 
-Treat these as “hard requirements”: violating them commonly surfaces as build-time or runtime model validation errors.
+If you enable CloudKit sync, validate the model design early; retrofitting later is painful.
 
 ## `@AppStorage`
 
@@ -167,3 +156,8 @@ For manager objects, prefer:
 
 - a persistence layer (SwiftData) for complex settings
 - or a small settings wrapper that reads/writes `UserDefaults` explicitly
+
+## Primary sources (for verification)
+
+- SwiftData + CloudKit sync: https://developer.apple.com/documentation/swiftdata/syncing-model-data-across-a-persons-devices
+- Core Data + CloudKit model rules: https://developer.apple.com/documentation/CoreData/creating-a-core-data-model-for-cloudkit
