@@ -52,6 +52,30 @@ codex --ask-for-approval never 'List available skills'
 
 Agents that implement the `SKILL.md` pattern can typically use the directory as-is.
 
+## Agent-operable quickstart
+
+This skill includes scripts and drop-ins so an agent can stay concrete.
+
+### Audit a target repo (no code changes)
+
+```bash
+python3 swiftui-macos/scripts/swiftui_audit.py /path/to/target-repo --out /tmp/swiftui_audit.md
+```
+
+### Install drop-in diagnostics (optional)
+
+```bash
+bash swiftui-macos/scripts/install_dropins.sh /path/to/target-repo
+```
+
+SwiftPM target install:
+
+```bash
+bash swiftui-macos/scripts/install_dropins.sh /path/to/target-repo --swiftpm-target MyTarget
+```
+
+Drop-ins live at `swiftui-macos/assets/dropins/SwiftUIMacOSDiagnostics`.
+
 ## Use
 
 In Codex CLI, invoke explicitly:

@@ -16,12 +16,24 @@ This repository is an **agent skill package**, not a Swift app. The deliverable 
 ## Repo layout rules
 
 - The skill root is `swiftui-macos/`.
+
+### Operable assets and scripts
+
+This skill is intended to be usable without “reading the prose first”. Prefer making new additions **agent-operable**:
+
+- Put **drop-in code** under `swiftui-macos/assets/dropins/` so an agent can `cp -R` it into a target repo.
+- Put **ready-to-run scripts** under `swiftui-macos/scripts/` so an agent can run them against a target repo.
+  - Scripts must be non-interactive and accept a repo path argument.
+  - Prefer producing a **report file** (Markdown) over printing long output.
+
+### Docs
+
 - `swiftui-macos/SKILL.md`:
   - Must include `name` and `description` frontmatter.
-  - Should point to reference files by relative path (one level deep).
+  - Keep it operational (commands + checklists). Point to reference files by relative path.
 - `swiftui-macos/references/`:
   - One topic per file; include concrete, macOS-relevant code examples.
-  - For examples that are meant to compile, place the source in `swiftui-macos/assets/examples/SwiftUIMacOSPatterns` and link to it.
+  - Link to compile-checked sources under `assets/examples/SwiftUIMacOSPatterns` when the example should build.
 
 ## Validation
 
@@ -38,14 +50,15 @@ This script:
 
 ## Adding or updating examples
 
-- Prefer adding examples to the Swift package under `swiftui-macos/assets/examples/SwiftUIMacOSPatterns`.
+- Prefer adding compile-checked examples to the Swift package under `swiftui-macos/assets/examples/SwiftUIMacOSPatterns`.
 - Keep examples minimal and focused:
-  - One concept per file.
-  - Include a short comment at the top describing what the example demonstrates.
+  - one concept per file
+  - small, runnable views or functions
 - When using OS- or compiler-version-specific APIs, gate with `@available(...)` and/or `#if swift(>=...)`.
 
 ## Common tasks
 
+- Update diagnostic workflows: edit `swiftui-macos/references/diagnostics.md` and `swiftui-macos/references/workflows.md`.
 - Update observation guidance: edit `swiftui-macos/references/observation.md`.
 - Update concurrency guidance: edit `swiftui-macos/references/concurrency.md`.
 - Update view identity/perf guidance: edit `swiftui-macos/references/performance.md` and `swiftui-macos/references/views.md`.

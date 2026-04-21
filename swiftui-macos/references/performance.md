@@ -1,35 +1,50 @@
 # Performance (macOS SwiftUI)
 
-Performance work in SwiftUI should be measurement-driven. On macOS Tahoe 26 and Xcode 26, SwiftUI performance tooling improved significantly (new SwiftUI instrument + cause-and-effect graph).
+Performance work in SwiftUI should be measurement-driven. Optimize only after you can point to a concrete signal: an Instruments trace, a known identity reset boundary, or a specific observation dependency causing churn.
 
-## Measure first: Instruments (Xcode 26)
+## Fast triage
 
-When debugging “why is this view updating?” or “why is scrolling janky?”:
+1. Run the heuristic repo audit:
 
-1. Product → Profile (Instruments).
-2. Choose the **SwiftUI** instrument/template.
-3. Reproduce the issue.
-4. Inspect the **cause-and-effect** graph to see which state mutations triggered which view updates.
-5. Use the “hot” nodes as the basis for fixes.
+```bash
+python3 swiftui-macos/scripts/swiftui_audit.py /path/to/repo --out /tmp/swiftui_audit.md
+```
+
+2. Fix the highest-signal identity issues first:
+
+- `.id(UUID())` and other unstable IDs
+- fragile `ForEach` IDs (`id: \.self` with non-unique/non-stable elements)
+
+3. If the issue is runtime-only (hitches, stutters), profile with Instruments.
+
+See also: `references/diagnostics.md`.
+
+## Measure first: Instruments (Instruments 26 / Xcode 26)
+
+When debugging “why is this view updating?” or “why is scrolling janky?” use Instruments.
+
+The SwiftUI template includes a **SwiftUI instrument** with high-level lanes:
+
+- **Update Groups**: when SwiftUI is doing work
+- **Long View Body Updates**: slow `body` evaluations
+- **Long Representable Updates**: slow `NSViewRepresentable` / `NSViewControllerRepresentable` updates
+- **Other Long Updates**: other slow SwiftUI work
+
+Use the **cause → effect** graph to connect a triggering mutation to the resulting view updates.
 
 Notes:
 
-- Xcode 26 replaced older “View Body”/“View Properties” instruments with the newer SwiftUI instrument template.
-- For quick localization checks, combine Instruments with debug-only `_printChanges()` (see `references/workflows.md`).
+- The prior SwiftUI templates/instruments (View Body / View Properties) are deprecated and replaced in Xcode 26.
+- Start with the long updates highlighted in red/orange and work outward.
 
-## SwiftUI 26 list improvements are not a substitute for good identity
+## View identity discipline
 
-SwiftUI 26 includes large performance gains for big lists on macOS, but the classic failure modes still apply:
+SwiftUI tracks identity primarily by **type** and **position** in the view tree. Identity mistakes commonly present as:
 
-- unstable identity (`.id(UUID())`)
-- re-sorting/re-filtering in `body` without caching
-- row bodies that read “too much” observable state (global invalidations)
-
-Treat framework improvements as headroom, not as permission to ignore identity discipline.
-
-## View identity
-
-SwiftUI tracks view identity primarily by **type** and **position** in the view tree. Identity mistakes are a common source of “why did my state reset?” and “why did this task restart?” issues.
+- state resets (`@State` cleared)
+- `.task` restarts
+- representables recreated
+- animations restarting
 
 ### Structural identity (`if`/`else`, `switch`)
 
@@ -61,7 +76,7 @@ ItemRow(item: item).id(UUID())
 ItemRow(item: item).id(item.id)
 ```
 
-Use `.id(...)` only when you intentionally want a reset boundary (e.g., to reset scroll position). Never use a value that changes on every body evaluation.
+Use `.id(...)` only when you intentionally want a reset boundary (for example, resetting selection or scroll position).
 
 ## Equatable views
 
@@ -82,23 +97,19 @@ struct ExpensiveChart: View, Equatable {
 
 **Caveat:** avoid `Equatable` views whose inputs are reference-typed model objects (for example, SwiftData `@Model` instances). Compare identifiers or value snapshots instead.
 
-## Representables: optimize `updateNSView`, don’t assume call suppression
+## Representables: optimize `updateNSView`
 
-For `NSViewRepresentable`, you must assume `updateNSView(_:context:)` can run frequently. Make it:
+Assume `updateNSView(_:context:)` can run frequently. Make it:
 
 - fast
 - idempotent
-- internally diffed (early-out when the desired state matches the last applied state)
+- internally diffed (early-out when desired state matches last applied state)
 
-Common pattern: store “last applied” values in the coordinator.
+Pattern: store “last applied” values in the coordinator and early-out.
 
-```swift
-final class Coordinator {
-    var lastAppliedText: String?
-}
-```
+Drop-in helper:
 
-Then in `updateNSView`, only apply changes when different.
+- `assets/dropins/SwiftUIMacOSDiagnostics/RepresentableDiffing.swift`
 
 ## Avoid `AnyView`
 
@@ -106,7 +117,7 @@ Then in `updateNSView`, only apply changes when different.
 
 ## Initializers must be trivial
 
-View initializers must not perform I/O or heavy work. Move work to `.task {}` or to model layers.
+View initializers must not perform I/O or heavy work. Move work to `.task {}` or model layers.
 
 ## Body evaluation: keep hot paths cheap
 
@@ -131,17 +142,13 @@ Extract row bodies into separate `View` structs. This gives each row its own obs
 
 Gesture updates can occur at display refresh rates. Store gesture-driven values (`offset`, `scale`, `rotation`) in `@State` rather than an `@Observable` model to avoid routing every frame through the observation pipeline.
 
-## Canvas and TimelineView
-
-Use `Canvas` for immediate-mode drawing when a view tree of hundreds of shapes would be expensive.
-
-Use `TimelineView` for scheduled updates (e.g., continuous animations) without driving the entire parent view tree.
-
 ## Compile-checked examples in this repo
 
 - [`IdentityExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/IdentityExamples.swift)
 
 ## Primary sources (for verification)
 
-- WWDC25: What’s new in SwiftUI (SwiftUI instrument, list improvements): https://developer.apple.com/videos/play/wwdc2025/256/
-- Xcode 26 release notes (Instruments SwiftUI template changes): https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes
+- WWDC25: Optimize SwiftUI performance with Instruments: https://developer.apple.com/videos/play/wwdc2025/306/
+- WWDC21: Demystify SwiftUI (identity/lifetime/dependencies): https://developer.apple.com/videos/play/wwdc2021/10022/
+- WWDC23: Demystify SwiftUI performance: https://developer.apple.com/videos/play/wwdc2023/10160/
+- Xcode 26 release notes (SwiftUI instrument template replacement): https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes

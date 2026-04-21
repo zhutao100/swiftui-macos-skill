@@ -1,6 +1,6 @@
 # macOS platform patterns (SwiftUI + AppKit)
 
-This reference covers macOS-specific platform integration patterns: `NSViewRepresentable`, windowing, AppKit bridging, and commands/menus.
+This reference covers macOS-specific platform integration patterns: `NSViewRepresentable`, windowing/scenes, AppKit bridging, and commands/menus.
 
 > Scope: macOS 15+ (AppKit). For iOS-only counterparts, see `references/scope.md`.
 
@@ -9,7 +9,7 @@ This reference covers macOS-specific platform integration patterns: `NSViewRepre
 ### Lifecycle
 
 - `makeNSView(context:)` — called once. Create and configure the AppKit view.
-- `updateNSView(_:context:)` — called when SwiftUI thinks the representable needs updating. Must be idempotent and fast.
+- `updateNSView(_:context:)` — called whenever SwiftUI decides the representable needs updating. Must be idempotent and fast.
 - `dismantleNSView(_:coordinator:)` — static cleanup hook.
 - `Coordinator` — delegates, target-action, AppKit → SwiftUI bridging, and “last applied” caching.
 
@@ -44,6 +44,10 @@ struct CodeTextView: NSViewRepresentable {
     }
 }
 ```
+
+Drop-in helper:
+
+- `assets/dropins/SwiftUIMacOSDiagnostics/RepresentableDiffing.swift`
 
 See the compile-checked example:
 
@@ -83,10 +87,10 @@ struct MyApp: App {
 }
 ```
 
-**Important:**
+Rules:
 
-- Prefer passing lightweight identifiers (not large value models).
-- The value should be **Hashable** and **Codable** for reuse and state restoration.
+- Prefer passing lightweight identifiers (not large models).
+- For state restoration, the value should be **Codable**.
 
 ### Use `Window` for single-instance windows
 
@@ -102,12 +106,14 @@ struct MyApp: App {
 }
 ```
 
-### Per-window vs shared state
+### State restoration (macOS)
 
-- **Global state** (data model, settings): create once at app level, inject into `WindowGroup`.
-- **Per-window state** (selection, split positions): create at the window root view with `@State`, inject via environment.
+On macOS, state restoration is user-controlled (system setting). By default, SwiftUI respects the system preference.
 
-Prefer keying state to the **window value** (from `WindowGroup(for:)`) rather than trying to fetch a window identifier from the environment.
+Use:
+
+- `@SceneStorage` for per-window UI state (selection, split positions)
+- `@AppStorage` for global preferences
 
 ## Commands, menus, and shortcuts (macOS)
 
@@ -128,14 +134,23 @@ struct AppCommands: Commands {
 }
 ```
 
-Notes:
+Guidelines:
 
-- On macOS Tahoe 26, menu items can show icons more consistently; using `Label` is the forward-compatible approach.
-- Keep command state narrow (avoid reading a broad `@Observable` manager inside the command tree).
+- Keep command dependencies narrow (avoid reading a broad `@Observable` manager inside the command tree).
+- Prefer `Label` for forward-compatible menu items (icons + text).
 
 See:
 
 - [`MenuCommandExamples.swift`](../assets/examples/SwiftUIMacOSPatterns/Sources/Patterns/MenuCommandExamples.swift)
+
+## Menu bar apps: `MenuBarExtra`
+
+Use `MenuBarExtra` when you want functionality available even when your app isn't active (utility/menu bar apps).
+
+Practical notes:
+
+- If you remove the Dock icon (agent-only app), provide a visible “Quit” action.
+- Be explicit about what lives in the menu vs a window.
 
 ## NSHostingView — embedding SwiftUI in AppKit
 
@@ -151,38 +166,13 @@ final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
 }
 ```
 
-Patterns:
+## When you must touch `NSWindow`
 
-- Override `hitTest(_:)` for transparent overlays that shouldn’t intercept clicks.
-- Use Auto Layout constraints to pin edges when the hosting view should fill its container.
-- Prefer injecting `@Observable` environment objects once (avoid rebuilding the root view every update).
+Prefer scene/environment actions first. If SwiftUI doesn't expose the API you need, use a window reader.
 
-## App delegate integration (macOS)
+Drop-in helper:
 
-Use `@NSApplicationDelegateAdaptor` only for lifecycle events without a SwiftUI equivalent.
-
-```swift
-@main
-struct MyApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    var body: some Scene { WindowGroup { ContentView() } }
-}
-
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) { /* ... */ }
-}
-```
-
-Prefer SwiftUI equivalents when available (`.onOpenURL`, `.commands`, scene configuration).
-
-## macOS-specific interaction expectations
-
-macOS interaction differs fundamentally from touch-first UX:
-
-- **Hover**: `.onHover { ... }` for discoverability.
-- **Context menus**: `.contextMenu { ... }` are expected.
-- **Keyboard shortcuts**: `.keyboardShortcut(...)` for core actions.
-- **Focus navigation**: `@FocusState` + test with Full Keyboard Access.
+- `assets/dropins/SwiftUIMacOSDiagnostics/WindowReader.swift` (`.onWindowResolved { ... }`)
 
 ## Compile-checked examples in this repo
 
@@ -192,4 +182,7 @@ macOS interaction differs fundamentally from touch-first UX:
 
 ## Primary sources (for verification)
 
+- Apple docs: `openWindow`: https://developer.apple.com/documentation/swiftui/environmentvalues/openwindow
+- Apple docs: state restoration behavior on macOS: https://developer.apple.com/documentation/swiftui/customizing-window-styles-and-state-restoration-behavior-in-macos
+- Apple docs: `MenuBarExtra`: https://developer.apple.com/documentation/swiftui/menubarextra
 - WWDC22: multi-window SwiftUI patterns: https://developer.apple.com/videos/play/wwdc2022/10061/

@@ -4,16 +4,26 @@
 
 The goal is not “avoid updates”; the goal is **scope the right updates to the right views** and avoid accidental dependencies.
 
-> macOS note: iOS-first articles often discuss `ObservableObject`/Combine. This file focuses on Swift’s Observation framework (`@Observable`) as used by SwiftUI on macOS.
+## Property wrapper decision rule (short)
 
-## Common macOS pitfall: accidental dependencies in menu/toolbars
+In SwiftUI + Observation, you can usually get to the right answer with:
+
+- `@State` — view owns a value/reference and SwiftUI owns the lifetime
+- `@Environment` — dependency injection
+- `@Bindable` — create bindings into an `@Observable` reference
+
+(See WWDC23 “Discover Observation in SwiftUI”.)
+
+## Accidental dependencies (common on macOS)
+
+### Toolbars / commands / menus
 
 On macOS, toolbars and menus are frequently built from SwiftUI view trees. If you build menu content by reading a broad `@Observable` manager, you can accidentally make the entire command tree dependent on “everything”.
 
 Heuristic:
 
-- Toolbar/menu views should read only the minimum state needed (IDs, small flags).
-- Prefer computed “projection” properties on the manager that return simple values.
+- toolbar/menu views should read only minimal state (IDs, small flags)
+- use computed “projection” properties that return small values
 
 ## Narrow reads inside hot loops
 
@@ -29,9 +39,9 @@ var body: some View {
 }
 ```
 
-This reduces repeated reads, and—more importantly—makes the dependency surface explicit.
+This both reduces repeated reads and makes the dependency surface explicit.
 
-## Mutation granularity: collections and `_modify`
+## Mutation granularity: collections
 
 In-place mutations (e.g., `append`, `sort`, mutating an element through a subscript) tend to produce **broad invalidations** because they mutate the storage in place.
 
@@ -45,14 +55,17 @@ model.items.append("D")  // in-place mutation -> notifies observers
 model.items.sort()       // in-place mutation -> notifies observers
 ```
 
-**Heuristic:** for large lists, prefer *row-level* observable references (one `@Observable` per row item) over storing everything in one big observable array.
+Heuristic:
+
+- for large lists, prefer **row-level observable references** (one `@Observable` per row item)
+- keep large derived arrays (filtered/sorted) out of hot view bodies; cache + invalidate explicitly
 
 ## Choose value vs reference semantics in lists
 
 The element type of a collection materially changes update granularity:
 
-- **Value elements (structs)**: mutating one element often mutates the whole collection value → broader notification.
-- **Reference elements (`@Observable` classes)**: mutating a property on one element can localize updates to views that read that element’s properties.
+- **Value elements (structs)**: mutating one element often mutates the whole collection value → broader notification
+- **Reference elements (`@Observable` classes)**: mutating a property on one element can localize updates to views that read that element’s properties
 
 Use reference semantics for list entities when you want “row-level” updates.
 
@@ -76,9 +89,11 @@ final class Manager {
 
 ## Observation outside SwiftUI
 
-### `withObservationTracking` (macOS 14+ era)
+SwiftUI handles dependency tracking for view updates. Outside SwiftUI, you have two main tools.
 
-Use `withObservationTracking` to rerun work when the observed properties change:
+### `withObservationTracking` (macOS 15 era)
+
+A classic pattern: re-run work when the observed properties change.
 
 ```swift
 import Observation
@@ -92,9 +107,11 @@ func observeCounter(_ counter: Counter) {
 }
 ```
 
-### `Observations` async sequence (macOS Tahoe 26 + Swift 6.2)
+This is widely available, but it is not transactional: if you perform multiple synchronous mutations, you may observe intermediate states.
 
-On macOS 26+, `Observations` provides an `AsyncSequence` of **transactional** updates (synchronous mutations coalesce until the next suspension point).
+### `Observations` async sequence (macOS 26 + Swift 6.2)
+
+`Observations` is an `AsyncSequence` that emits **transactional** updates: synchronous changes coalesce until the next suspension point.
 
 ```swift
 import Observation
@@ -114,8 +131,12 @@ func printChanges(counter: Counter) async {
 Prefer `Observations` when:
 
 - you need a long-lived stream of changes
-- you want transactional snapshots (avoid intermediate states during a burst of synchronous writes)
+- you want consistent snapshots during bursts of synchronous writes
 - you are building “auto-save on change” behaviors (common in multi-window macOS apps)
+
+Drop-in wrapper:
+
+- `assets/dropins/SwiftUIMacOSDiagnostics/ObservationTracing.swift`
 
 ## Compile-checked examples in this repo
 
@@ -123,7 +144,8 @@ Prefer `Observations` when:
 
 ## Primary sources (for verification)
 
-- Observation framework overview: https://developer.apple.com/documentation/Observation
-- `Observations` API: https://developer.apple.com/documentation/observation/observations
+- WWDC23: Discover Observation in SwiftUI: https://developer.apple.com/videos/play/wwdc2023/10149/
 - Observability proposal (macro model): https://github.com/apple/swift-evolution/blob/main/proposals/0395-observability.md
-- Transactional observation pitch/discussion: https://forums.swift.org/t/pitch-transactional-observation-of-values/78315
+- Swift 6.2 release notes (Observations async sequence): https://swift.org/blog/swift-6.2-released/
+- Transactional observation proposal (SE-0475): https://github.com/swiftlang/swift-evolution/blob/main/proposals/0475-observed.md
+- Apple docs: `Observations`: https://developer.apple.com/documentation/observation/observations

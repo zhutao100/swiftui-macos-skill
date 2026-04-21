@@ -1,6 +1,6 @@
 # Agentic workflows for SwiftUI on macOS
 
-This reference focuses on repeatable loops that an agent can run to validate SwiftUI changes on macOS, with specific guidance for macOS 15 and macOS Tahoe 26.
+This reference focuses on repeatable loops an agent can run to validate SwiftUI changes on macOS (macOS 15 and macOS 26).
 
 ## Minimal verification loop (fast)
 
@@ -27,6 +27,33 @@ swift build
 swift test
 ```
 
+## “Find the sharp edges first”: audit + focused probes
+
+### 1) Static audit (fast, local)
+
+```bash
+python3 swiftui-macos/scripts/swiftui_audit.py /path/to/repo --out /tmp/swiftui_audit.md
+```
+
+Prioritize fixes that frequently explain multiple symptoms:
+
+- unstable identity (`.id(UUID())`, fragile `ForEach` IDs)
+- `Task.detached` misuse
+- representable churn (`updateNSView`)
+
+### 2) Drop-in diagnostics (optional)
+
+Install drop-ins when you need cheap assertions and logs:
+
+```bash
+bash swiftui-macos/scripts/install_dropins.sh /path/to/repo
+```
+
+Use:
+
+- `MainActorChecks.assertIsolated()` for “prove we’re on MainActor”
+- `TaskTracing.run("label") { ... }` for cancellation-aware tracing
+
 ## macOS-first research loop (avoid iOS confusion)
 
 When you need to look something up:
@@ -34,17 +61,15 @@ When you need to look something up:
 1. Start with a **primary source** query:
    - Apple docs / WWDC session / Swift Evolution / Swift Forums
 2. Add macOS bias and iOS exclusions:
-   - include: `macOS`, `AppKit`, `NSViewRepresentable`, `WindowGroup`
+   - include: `macOS`, `AppKit`, `NSViewRepresentable`, `WindowGroup`, `MenuBarExtra`
    - exclude: `-UIKit -UIViewRepresentable -UIHostingController -UIApplication`
-3. Verify the **minimum macOS availability** (15 vs 26) before writing code.
+3. Verify the **minimum availability** (15 vs 26) before writing code.
 
 ## Debugging “why is this view updating?”
 
 ### 1) `Self._printChanges()` (underscored / debug-only)
 
-`Self._printChanges()` is an underscored SwiftUI debugging helper that prints why a view’s body reevaluated.
-
-Pattern:
+`Self._printChanges()` prints why a view’s body reevaluated.
 
 ```swift
 var body: some View {
@@ -61,7 +86,7 @@ Guidelines:
 - Do not ship it in release builds.
 - Because it is underscored, it may change across OS/toolchain versions.
 
-### 2) Instruments: SwiftUI “cause & effect” (Xcode 26)
+### 2) Instruments: SwiftUI cause & effect (Instruments 26)
 
 Use Instruments when:
 
@@ -71,15 +96,13 @@ Use Instruments when:
 
 Practical workflow:
 
-1. Build and run the app.
-2. Product → Profile.
-3. Select the **SwiftUI** instrument/template.
-4. Reproduce the UI issue.
-5. Inspect the cause-and-effect graph to identify what change caused which view updates.
+1. Build and run the app
+2. Product → Profile
+3. Select the SwiftUI template
+4. Reproduce the UI issue
+5. Use the cause-and-effect graph and the long-update lanes
 
-### 3) Visual update debugging (Xcode)
-
-When available in Xcode, enable the SwiftUI debug option to flash updated regions to validate whether updates are localized or cascading. Use it to confirm that fixes actually reduce churn.
+See also: `references/performance.md`.
 
 ## Repro harnesses for tricky bugs
 
@@ -118,21 +141,12 @@ UI tests are expensive and can be flaky. Use them when:
 
 Guidelines:
 
-- Keep UI tests small: one flow per test.
-- Use stable accessibility identifiers.
-- Avoid sleeps; prefer expectations and predicates.
-
-## Asset-backed examples and templates
-
-This skill repo includes:
-
-- a compile-checked Swift package: `assets/examples/SwiftUIMacOSPatterns`
-- a ready-to-run scaffold: `assets/templates/MacOSSwiftUIAppTemplate`
-
-Use them as copy/paste sources, and keep them compiling when updating examples.
+- Keep UI tests small: one flow per test
+- Use stable accessibility identifiers
+- Avoid sleeps; prefer expectations and predicates
 
 ## Primary sources (for verification)
 
 - Debugging SwiftUI view updates with `_printChanges`: https://www.avanderlee.com/swiftui/debugging-swiftui-views/
-- WWDC25: What’s new in Xcode (SwiftUI instrument): https://developer.apple.com/videos/play/wwdc2025/247/
-- Xcode 26 release notes: https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes
+- WWDC25: Optimize SwiftUI performance with Instruments: https://developer.apple.com/videos/play/wwdc2025/306/
+- WWDC21: Discover concurrency in SwiftUI (`.task` lifetime/cancellation): https://developer.apple.com/videos/play/wwdc2021/10019/

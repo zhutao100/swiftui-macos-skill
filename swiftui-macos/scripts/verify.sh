@@ -43,6 +43,16 @@ swift_cmd() {
   fi
 }
 
+swiftc_cmd() {
+  if command -v xcrun >/dev/null 2>&1; then
+    dev_cmd xcrun --sdk macosx swiftc "$@"
+  elif command -v swiftc >/dev/null 2>&1; then
+    swiftc "$@"
+  else
+    return 127
+  fi
+}
+
 run_logged() {
   local label="$1"
   shift
@@ -88,6 +98,19 @@ EXAMPLE_DIR="${ROOT_DIR}/assets/examples/SwiftUIMacOSPatterns"
 if command -v swift >/dev/null 2>&1 || command -v xcrun >/dev/null 2>&1; then
   # SwiftUI is only available on Apple platforms. Skip Swift build/test when not available.
   if swift_cmd -e 'import SwiftUI' >/dev/null 2>&1; then
+    DROPINS_DIR="${ROOT_DIR}/assets/dropins/SwiftUIMacOSDiagnostics"
+    if [ -d "$DROPINS_DIR" ] && command -v find >/dev/null 2>&1; then
+      DROPIN_FILES=()
+      while IFS= read -r f; do
+        DROPIN_FILES+=("$f")
+      done < <(find "$DROPINS_DIR" -maxdepth 1 -type f -name '*.swift' -print)
+
+      if [ "${#DROPIN_FILES[@]}" -gt 0 ]; then
+        echo "[verify] Typechecking drop-ins..."
+        run_logged "drop-ins typecheck" swiftc_cmd -typecheck "${DROPIN_FILES[@]}"
+      fi
+    fi
+
     echo "[verify] Building example package..."
     run_logged "example build" swift_cmd build --package-path "$EXAMPLE_DIR"
 

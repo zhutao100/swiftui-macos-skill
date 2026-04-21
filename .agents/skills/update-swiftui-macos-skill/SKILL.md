@@ -10,7 +10,7 @@ compatibility: >-
   Intended to run in the swiftui-macos-skill repository. Assumes the primary
   skill targets macOS 15 and macOS 26, with Swift 6.2+ and Xcode 16+/26+.
 metadata:
-  author: kageroumado
+  author: swiftui-macos-skill
   version: "1.1.0"
 ---
 
